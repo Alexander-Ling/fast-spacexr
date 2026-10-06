@@ -225,18 +225,28 @@ decompose_batch_list <- function(nUMI, cell_type_means, beads, gene_list, constr
     # Compiled solver (OpenMP over beads). Beads it cannot solve (non-finite values, eigen/QP failure)
     # are re-run below with the R implementation.
     beads_num <- beads; storage.mode(beads_num) <- "double"
-    cpp <- irwls_batch_cpp(S_base, as.numeric(nUMI), beads_num, Q_mat, SQ_mat, X_vals, K_val, MIN.CHANGE, 50L,
-                           as.integer(max(1, max_cores)))
-    W <- cpp$weights; colnames(W) <- colnames(S_base); conv <- cpp$converged
-    bad <- which(cpp$status != 0)
-    if(length(bad) > 0) {
-      warning("decompose_batch: compiled solver failed for ", length(bad), " bead(s); re-running them in R")
-      fb <- lapply(bad, decompose_one)
-      for(k in seq_along(bad)) { W[bad[k], ] <- fb[[k]]$weights; conv[bad[k]] <- fb[[k]]$converged }
+    cpp <- tryCatch(irwls_batch_cpp(S_base, as.numeric(nUMI), beads_num, Q_mat, SQ_mat, X_vals, K_val, MIN.CHANGE, 50L,
+                                    as.integer(max(1, max_cores))),
+                    error = function(e) {
+                      warning("decompose_batch: compiled solver rejected its inputs (", conditionMessage(e),
+                              "); using the R implementation")
+                      NULL
+                    })
+    if(!is.null(cpp)) {
+      W <- cpp$weights; colnames(W) <- colnames(S_base); conv <- cpp$converged
+      bad <- which(cpp$status != 0)
+      if(length(bad) > 0) {
+        warning("decompose_batch: compiled solver failed for ", length(bad), " bead(s); re-running them in R")
+        # beads with invalid data (NaN / negative counts, ...) fail in R too; they get NA weights instead of
+        # aborting the whole batch
+        fb <- lapply(bad, function(i) tryCatch(decompose_one(i),
+                                               error = function(e) list(weights = rep(NA_real_, ncol(W)), converged = FALSE)))
+        for(k in seq_along(bad)) { W[bad[k], ] <- fb[[k]]$weights; conv[bad[k]] <- fb[[k]]$converged }
+      }
+      if(as_matrix)
+        return(list(weights = W, converged = conv))
+      return(lapply(seq_len(n_beads), function(i) list(weights = W[i, ], converged = conv[i])))
     }
-    if(as_matrix)
-      return(list(weights = W, converged = conv))
-    return(lapply(seq_len(n_beads), function(i) list(weights = W[i, ], converged = conv[i])))
   }
   if(max_cores > 1 && n_beads > 1 && .Platform$OS.type == "unix") {
     # Forked workers inherit Q_mat, X_vals, K_val, SQ_mat and the profile matrices copy-on-write, so
