@@ -10,6 +10,35 @@ README follows this section unchanged.
 > upstream"). The code was written with the assistance of an AI coding assistant (Claude Code) and checked
 > with the tests listed here; it has not had an independent human code review.
 
+## Installation
+
+```r
+# recommended
+install.packages("pak")                      # if you do not have it
+pak::pak("Alexander-Ling/fast-spacexr")
+
+# alternative
+remotes::install_github("Alexander-Ling/fast-spacexr")
+```
+
+(`devtools::install_github()` is deprecated in favour of `pak::pak()`; it still works.) R package dependencies, including
+`Rcpp` and `RcppArmadillo`, are installed automatically from CRAN. Unlike upstream spacexr, this fork contains compiled code, so
+**a C++17 compiler is required, and neither installer will install one for you**:
+
+* **Windows:** [Rtools](https://cran.r-project.org/bin/windows/Rtools/) matching your R version. `pkgbuild::check_build_tools(debug = TRUE)` reports
+  whether R can find it.
+* **macOS:** the Xcode command-line tools (`xcode-select --install`). The default Apple compiler has no OpenMP; the package should then build
+  without it, but macOS has not been tested.
+* **Linux:** `g++` and `make` (for example `build-essential` on Debian/Ubuntu).
+
+The package keeps the name `spacexr` and version 2.2.1, so installing it **replaces any existing spacexr in the same library**. To confirm the
+fork is the one that is loaded: `exists("irwls_batch_cpp", asNamespace("spacexr"))` is `TRUE`. The repository is about 550 MB because it
+includes upstream's precomputed likelihood tables, so the first download takes a moment; a build from GitHub took about 1-1.5 minutes
+in our tests.
+
+Tested: installation from GitHub on Windows (R 4.6.0 with Rtools45) with both `devtools::install_github()` and `pak::pak()`, and
+`R CMD INSTALL` from source on Linux (R 4.4.3, GCC 16). Not tested: the error a user sees when no compiler is present, and macOS.
+
 ## Architecture
 
 RCTD scores every pixel independently, so scoring is embarrassingly parallel. Upstream's cost was dominated by
