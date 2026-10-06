@@ -90,10 +90,8 @@ choose_sigma_c <- function(RCTD) {
     set_likelihood_vars(Q_mat_all[[as.character(sigma)]], X_vals)
     #message(paste('chooseSigma: getting initial weights for #samples: ',N_fit))
     results = decompose_batch(puck@nUMI[fit_ind], RCTD@cell_type_info$renorm[[1]], beads, RCTD@internal_vars$gene_list_reg, constrain = F, max_cores = RCTD@config$max_cores)
-    weights = Matrix(0, nrow = N_fit, ncol = RCTD@cell_type_info$renorm[[3]])
+    weights = do.call(rbind, lapply(results, function(r) r$weights))
     rownames(weights) = fit_ind; colnames(weights) = RCTD@cell_type_info$renorm[[2]];
-    for(i in 1:N_fit)
-      weights[i,] = results[[i]]$weights
     prediction <- sweep(as.matrix(RCTD@cell_type_info$renorm[[1]][RCTD@internal_vars$gene_list_reg,]) %*% t(as.matrix(weights)), 2, puck@nUMI[fit_ind], '*')
     message(paste('Likelihood value:',calc_log_l_vec(as.vector(prediction), as.vector(t(beads)))))
     sigma_prev <- sigma

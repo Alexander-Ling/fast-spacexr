@@ -66,7 +66,12 @@ process_beads_batch <- function(cell_type_info, gene_list, puck, class_df = NULL
   #out_file = "logs/process_beads_log.txt"
   #if (file.exists(out_file))
   #  file.remove(out_file)
-  if(MAX_CORES > 1) {
+  if(MAX_CORES > 1 && .Platform$OS.type == "unix" && dim(beads)[1] > 1) {
+    results <- fork_lapply(dim(beads)[1], MAX_CORES, function(i)
+      process_bead_doublet(cell_type_info, gene_list, puck@nUMI[i], beads[i,],
+                           class_df = class_df, constrain = constrain, MIN.CHANGE = MIN.CHANGE,
+                           CONFIDENCE_THRESHOLD = CONFIDENCE_THRESHOLD, DOUBLET_THRESHOLD = DOUBLET_THRESHOLD))
+  } else if(MAX_CORES > 1) {
     numCores = parallel::detectCores();
     if(parallel::detectCores() > MAX_CORES)
       numCores <- MAX_CORES
@@ -99,7 +104,12 @@ process_beads_batch <- function(cell_type_info, gene_list, puck, class_df = NULL
 process_beads_multi <- function(cell_type_info, gene_list, puck, class_df = NULL, constrain = T,
                                 MAX_CORES = 8, MIN.CHANGE = 0.001, MAX.TYPES = 4, CONFIDENCE_THRESHOLD = 10, DOUBLET_THRESHOLD = 25) {
   beads = t(as.matrix(puck@counts[gene_list,]))
-  if(MAX_CORES > 1) {
+  if(MAX_CORES > 1 && .Platform$OS.type == "unix" && dim(beads)[1] > 1) {
+    results <- fork_lapply(dim(beads)[1], MAX_CORES, function(i)
+      process_bead_multi(cell_type_info, gene_list, puck@nUMI[i], beads[i,], class_df = class_df,
+                         constrain = constrain, MIN.CHANGE = MIN.CHANGE, MAX.TYPES = MAX.TYPES,
+                         CONFIDENCE_THRESHOLD = CONFIDENCE_THRESHOLD, DOUBLET_THRESHOLD = DOUBLET_THRESHOLD))
+  } else if(MAX_CORES > 1) {
     numCores = parallel::detectCores();
     if(parallel::detectCores() > MAX_CORES)
       numCores <- MAX_CORES
@@ -171,6 +181,21 @@ fitPixels <- function(RCTD, doublet_mode = "doublet") {
   }
 }
 
+# Applies `one` to 1..n on forked workers (unix only): the likelihood tables and profile matrices
+# are inherited copy-on-write instead of being serialized to a cluster, and beads are handed out in
+# small chunks (dynamic scheduling) so one slow bead does not leave workers idle.
+fork_lapply <- function(n, max_cores, one, chunk_cap = 200L) {
+  numCores <- max(1L, min(max_cores, parallel::detectCores(), n))
+  chunk_size <- max(1L, min(chunk_cap, ceiling(n / (numCores * 8))))
+  chunks <- split(seq_len(n), ceiling(seq_len(n) / chunk_size))
+  out <- parallel::mclapply(chunks, function(ix) lapply(ix, one), mc.cores = numCores, mc.preschedule = FALSE)
+  failed <- vapply(out, function(x) inherits(x, "try-error") || is.null(x), logical(1))
+  if(any(failed))
+    stop("fork_lapply: ", sum(failed), " worker chunk(s) failed: ",
+         paste(unique(unlist(lapply(out[failed], as.character))), collapse = "; "))
+  unlist(out, recursive = FALSE, use.names = FALSE)
+}
+
 decompose_batch <- function(nUMI, cell_type_means, beads, gene_list, constrain = T, OLS = F, max_cores = 8, MIN.CHANGE = 0.001) {
   #out_file = "logs/decompose_batch_log.txt"
   #if (file.exists(out_file))
@@ -190,15 +215,7 @@ decompose_batch <- function(nUMI, cell_type_means, beads, gene_list, constrain =
     # Forked workers inherit Q_mat, X_vals, K_val, SQ_mat and the profile matrices copy-on-write, so
     # nothing is serialized and no cluster has to be started. Beads are handed out in many small
     # chunks (dynamic scheduling) rather than one task per bead.
-    numCores <- min(max_cores, parallel::detectCores(), n_beads)
-    chunk_size <- max(1L, min(500L, ceiling(n_beads / (numCores * 8))))
-    chunks <- split(seq_len(n_beads), ceiling(seq_len(n_beads) / chunk_size))
-    out <- parallel::mclapply(chunks, decompose_chunk, mc.cores = numCores, mc.preschedule = FALSE)
-    failed <- vapply(out, function(x) inherits(x, "try-error") || is.null(x), logical(1))
-    if(any(failed))
-      stop("decompose_batch: ", sum(failed), " worker chunk(s) failed: ",
-           paste(unique(unlist(lapply(out[failed], as.character))), collapse = "; "))
-    weights <- unlist(out, recursive = FALSE, use.names = FALSE)
+    weights <- fork_lapply(n_beads, max_cores, decompose_one)
   } else if(max_cores > 1) {
     # no fork on this platform: one task per worker, not per bead
     numCores <- min(max_cores, parallel::detectCores(), n_beads)
