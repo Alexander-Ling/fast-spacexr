@@ -44,6 +44,7 @@ problem; the surrounding R code was:
 | Result assembly | `fitPixels()` (full), `choose_sigma_c()` and `gather_results()` (doublet) build their outputs column-wise in one pass. |
 | **Compiled core, full mode** | `src/irwls_core.h` + `src/irwls.cpp` (Rcpp/RcppArmadillo, OpenMP): a port of `solveIRWLS.weights` -> `solveWLS` for `constrain = FALSE` (spline derivatives, Hessian, PSD projection, bound-constrained QP) over many pixels in parallel. `quadprog::solve.QP` is replaced there by a warm-started primal active-set solver for the same strictly convex QP. |
 | **Compiled core, doublet mode** | `doublet_batch_cpp()` ports `process_bead_doublet` for `constrain = FALSE` with a class table: full fit, candidate selection, singlet and pair scores, `check_pairs_type`, the reject/singlet/doublet_certain/doublet_uncertain logic, and the final two-type fit. |
+| **Process-level sharding of the compiled solvers** | `cpp_shard_apply()` splits a batch into small shards handled by forked worker processes, each running the compiled solver single-threaded (no shared locks), instead of one process with many OpenMP threads, which did not scale. On unix only; elsewhere the batch runs in-process with OpenMP threads. |
 | Safety | Every table lookup is bounds-checked and non-finite input is rejected before any float-to-int cast; dimensions are validated; a pixel the compiled code cannot solve is reported through a status code and **re-run with the original R implementation** (NA weights, with a warning, if even R fails) instead of crashing or aborting the batch. |
 
 Not changed: the model, `create.RCTD`, `fitBulk` (platform-effect estimation, still R), reference
@@ -51,6 +52,7 @@ processing, the doublet/multi/full statistics, C-SIDE, plotting, the data classe
 
 ### Switches and requirements
 
+* `options(spacexr.parallel = "thread")` runs the compiled solvers with OpenMP threads inside one process instead of worker processes (much slower here; for platforms without fork).
 * `options(spacexr.use_cpp = FALSE)` disables the compiled solvers (the R implementation, with the
   non-compiled speedups above, is used instead; results are then still not bit-identical to upstream).
 * Building needs a C++17 compiler; OpenMP is used if available. `Rcpp` and `RcppArmadillo` are new
@@ -61,15 +63,44 @@ processing, the doublet/multi/full statistics, C-SIDE, plotting, the data classe
 
 ## Measured speed-up (single machine, R 4.4.3, 345 genes x 19 types)
 
-| Mode | Original | Fork | Notes |
-|---|---|---|---|
-| Full, 1 core | 82 pixels/s | 609 pixels/s (7.4x) | 2,000 pixels, same inputs |
-| Full, 1 core, R-level changes only | 82 | 164 (2.0x) | before the compiled core |
-| Full, 2 cores (R-level changes only) | 65 | 304 (4.7x) | original is *slower* with 2 cores than with 1 |
-| Doublet, 1 core | 12 pixels/s | 256 pixels/s (21x) | 300 pixels |
-| Doublet, 8 cores | 40 | 361 (8.9x) | measured while the machine was busy with another job; not a clean scaling measurement |
+Hardware for all numbers: AMD Ryzen 9 9950X3D (16 physical cores, 32 threads), Linux container.
 
-Clean scaling at 16-32 cores has **not** been measured yet.
+**Compiled solvers, process-level sharding** (what the fork now does by default on unix): the batch is split into small
+shards (about n / (4 x workers) pixels), each handled by a forked worker process running the compiled solver single-threaded.
+Running the same solver on many OpenMP threads inside *one* process did not scale: throughput peaked at 2-4 threads
+(~1,100 pixels/s) and fell below the single-thread rate at 16-28 threads (cause not identified; allocator settings, OpenMP wait
+policy and thread pinning made no difference; BLAS threading was not the whole story). Separate processes scale almost linearly up to
+the physical core count:
+
+| Workers (single-threaded processes) | Total pixels/s (solver only) | Per worker |
+|---|---|---|
+| 1 | 675 | 675 |
+| 4 | 2,615 | ~650 |
+| 8 | 4,936 | ~615 |
+| 16 | 8,777 | ~545 |
+| 28 | 11,449 | ~410 (SMT-limited beyond 16) |
+
+**Full pipeline** (`create.RCTD` + `fitPixels`, full mode, 28 cores, real entities, global fit injected):
+
+| Chunk (pixels) | Original `fitPixels` | Fork `fitPixels` | Fork total incl. `create.RCTD` |
+|---|---|---|---|
+| 25,000 | 79 s (3.2 ms/pixel) | 2.8 s (0.11 ms/pixel) | 3.7 s |
+| 100,000 | -- | 9.5 s | 10.9 s |
+| 250,000 | -- | 23.6 s | 27.1 s (9,200 pixels/s) |
+
+Time per pixel is flat in the chunk size (the original's grew with chunk size, see below).
+
+**Production run, 79 samples / 1,578,825 pixels, 28 cores, same inputs and settings** (original package: 250k-pixel chunks for the
+large samples, 25k for the rest; fork: 250k chunks): original 2.86 h (153 pixels/s) -> fork **5.2 min (5,027 pixels/s)**, 33x overall.
+Like-for-like (samples that fit in one chunk for both runs): 215 -> 2,560 pixels/s (<10k pixels, 12x) and 305 -> 5,123 pixels/s
+(10-50k pixels, 17x); the largest samples run at ~7,000 pixels/s. The overall 33x is inflated relative to a perfectly chunked
+original, whose large jobs lost throughput to quadratic result assembly (80 pixels/s on a 406k-pixel sample vs 305 on small ones).
+
+Earlier, intermediate numbers (before process-level sharding): full mode 1 core 82 -> 609 pixels/s (7.4x; 2.0x from the R-level changes
+alone); doublet mode 1 core 12 -> 256 pixels/s (21x); with OpenMP threads inside one process the production run reached only
+439 pixels/s on 28 cores (1.4-1.7x like-for-like).
+
+Doublet mode with process-level sharding, 2,000 pixels, 28 workers: original 66 pixels/s -> fork 1,875 pixels/s (28x); results identical (below).
 
 ## Results compared with upstream
 
@@ -88,6 +119,11 @@ first/second-class flags and both convergence flags **identical for every pixel*
 `singlet_score` within 1e-12, doublet weights within 2e-11, `score_mat` values within 2e-9 (dimnames identical; the compiled path returns it as a symmetric `Matrix` class, the original as `dgCMatrix`).
 Full-fit weights differ by up to 7e-4 for the stopping-rule reason above. Discrete outputs could in principle
 flip when two scores are within numerical noise of a decision threshold; none did in 2,000 pixels.
+
+**Production scale (full mode, 79 samples, 1,578,825 pixels, same inputs):** the fork scored exactly the same pixels as upstream; dominant
+type identical for all but 1 pixel (99.99994%; that pixel is a near tie, total weight change 0.003) and identical for every confident call
+(max weight > 0.5); mean |dW| 4.6e-9; no pixel has any weight differing by more than 0.01 (largest per-sample max |dW| 2.9e-3). The
+process-level-sharding build gave the same figures as the earlier threaded build.
 
 **Other changes:** `gather_results()` output is identical to the original (`all.equal` on `results_df`, `weights`,
 `weights_doublet`, `score_mat`, 100 pixels). Doublet-mode dispatch change alone (R solver): spot class and types identical,
@@ -112,10 +148,8 @@ Please treat these as unverified:
   `R CMD check` has not been run.
 * **Other data.** Only Xenium (345 genes, 19 types, likelihood table with `K_val = 1000`). Other platforms (Visium, Slide-seq, MERFISH),
   much larger gene lists or cell-type counts, and non-default `UMI_min`/`gene_cutoff`/`CONFIDENCE_THRESHOLD` settings were not tested.
-* **Scale.** The largest batch run through the fork was thousands of pixels. Behavior and memory for batches of millions
-  (including `fork_lapply()` chunking and the dense `beads` matrix that `fitPixels` still builds) are untested here.
-* **Parallel scaling beyond 8 threads**, and other BLAS/LAPACK builds (the compiled code calls LAPACK from several OpenMP threads;
-  fine with the OpenBLAS used here, not checked elsewhere).
+* **Scale.** The full-mode compiled path was run on 1.58M pixels (one segmentation of one dataset). Doublet mode was compared on 2,000 pixels only. Batches of tens of millions, and the memory behaviour of the dense per-chunk `beads` matrix beyond 250k pixels (peak ~4.3 GB at 250k), are untested.
+* **Other hardware.** Scaling was measured on one 16-core / 32-thread CPU. In-process OpenMP threading did not scale there and the cause was not identified, so it may or may not affect other machines; process-level sharding was validated only on this machine. Other BLAS/LAPACK builds were not checked (each worker process runs the compiled solver single-threaded).
 * **Memory safety of the R-facing glue.** The numerical kernel is tested without R under AddressSanitizer, UBSan and LeakSanitizer
   (clean; results bitwise identical for 1-32 threads; no memory growth over repeated calls), but plain R aborts at startup
   under an ASan preload, so `src/irwls.cpp` (the Rcpp wrapper) was exercised only through normal R calls. ThreadSanitizer was not
@@ -134,6 +168,7 @@ private data); they are summarised here rather than shipped.
 3. `ced4078` compiled (Rcpp/RcppArmadillo/OpenMP) core for full-mode IRWLS
 4. `80351cb` hardening (bounds checks, validation, R fallback) and the sanitizer harness
 5. `4368427` compiled doublet mode
+6. `(this commit)` process-level sharding of the compiled solvers (`cpp_shard_apply`), README update
 
 Original author: Dylan Cable (spacexr). This fork keeps upstream's GPL-3 licence.
 

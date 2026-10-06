@@ -231,8 +231,15 @@ decompose_batch_list <- function(nUMI, cell_type_means, beads, gene_list, constr
     # Compiled solver (OpenMP over beads). Beads it cannot solve (non-finite values, eigen/QP failure)
     # are re-run below with the R implementation.
     beads_num <- beads; storage.mode(beads_num) <- "double"
-    cpp <- tryCatch(irwls_batch_cpp(S_base, as.numeric(nUMI), beads_num, Q_mat, SQ_mat, X_vals, K_val, MIN.CHANGE, 50L,
-                                    as.integer(max(1, max_cores))),
+    nUMI_num <- as.numeric(nUMI)
+    cpp <- tryCatch({
+                      parts <- cpp_shard_apply(n_beads, max_cores, function(ix, threads)
+                        irwls_batch_cpp(S_base, nUMI_num[ix], beads_num[ix, , drop = FALSE], Q_mat, SQ_mat, X_vals,
+                                        K_val, MIN.CHANGE, 50L, threads))
+                      list(weights = do.call(rbind, lapply(parts, `[[`, "weights")),
+                           converged = unlist(lapply(parts, `[[`, "converged"), use.names = FALSE),
+                           status = unlist(lapply(parts, `[[`, "status"), use.names = FALSE))
+                    },
                     error = function(e) {
                       warning("decompose_batch: compiled solver rejected its inputs (", conditionMessage(e),
                               "); using the R implementation")
@@ -291,8 +298,21 @@ process_beads_doublet_cpp <- function(cell_type_info, gene_list, nUMI, beads, cl
   type_names <- cell_type_info[[2]]
   cls_id <- as.integer(factor(as.character(class_df[type_names, "class"])))
   beads_num <- beads; storage.mode(beads_num) <- "double"
-  cpp <- tryCatch(doublet_batch_cpp(S_base, as.numeric(nUMI), beads_num, Q_mat, SQ_mat, X_vals, K_val, MIN.CHANGE,
-                                    cls_id, CONFIDENCE_THRESHOLD, DOUBLET_THRESHOLD, as.integer(max(1, max_cores))),
+  nUMI_num <- as.numeric(nUMI)
+  cpp <- tryCatch({
+                    parts <- cpp_shard_apply(dim(beads)[1], max_cores, function(ix, threads)
+                      doublet_batch_cpp(S_base, nUMI_num[ix], beads_num[ix, , drop = FALSE], Q_mat, SQ_mat, X_vals, K_val,
+                                        MIN.CHANGE, cls_id, CONFIDENCE_THRESHOLD, DOUBLET_THRESHOLD, threads))
+                    merged <- list()
+                    for(f in c("all_weights", "doublet_weights"))
+                      merged[[f]] <- do.call(rbind, lapply(parts, `[[`, f))
+                    for(f in c("first", "second", "spot", "min_score", "singlet_score", "conv_all", "conv_doublet",
+                               "first_class", "second_class", "status"))
+                      merged[[f]] <- unlist(lapply(parts, `[[`, f), use.names = FALSE)
+                    for(f in c("cand", "score_mat", "singlet_scores"))
+                      merged[[f]] <- unlist(lapply(parts, `[[`, f), recursive = FALSE, use.names = FALSE)
+                    merged
+                  },
                   error = function(e) {
                     warning("process_beads_batch: compiled doublet search rejected its inputs (", conditionMessage(e),
                             "); using the R implementation")
@@ -325,4 +345,29 @@ process_beads_doublet_cpp <- function(cell_type_info, gene_list, nUMI, beads, cl
          conv_all = cpp$conv_all[i], conv_doublet = cpp$conv_doublet[i], score_mat = as(sm, "CsparseMatrix"), singlet_scores = ss,
          first_class = cpp$first_class[i], second_class = cpp$second_class[i])
   })
+}
+
+# Runs fn(ix, threads) over shards of 1..n and returns the list of shard results in order.
+#
+# On unix the shards are processed by separate forked worker processes, each running the compiled solver
+# single-threaded. Independent processes share no locks, which scales close to linearly with the number of
+# physical cores; running the same solver on many OpenMP threads inside one process did not scale (it got
+# slower beyond ~4 threads). Shards are small (about n / (4 * workers) beads) and handed out dynamically
+# so that unevenly expensive beads do not leave workers idle. The inputs are inherited copy-on-write.
+# Elsewhere (no fork) the whole batch runs in this process with `max_cores` OpenMP threads.
+# Set options(spacexr.parallel = "thread") to force in-process threading on unix as well.
+cpp_shard_apply <- function(n, max_cores, fn) {
+  max_cores <- as.integer(max(1, max_cores))
+  use_proc <- .Platform$OS.type == "unix" && max_cores > 1 && n > 1 && !identical(getOption("spacexr.parallel"), "thread")
+  if(!use_proc)
+    return(list(fn(seq_len(n), max_cores)))
+  workers <- max(1L, min(max_cores, parallel::detectCores(), n))
+  shard <- max(1L, ceiling(n / (workers * 4)))
+  shards <- split(seq_len(n), ceiling(seq_len(n) / shard))
+  parts <- parallel::mclapply(shards, fn, 1L, mc.cores = workers, mc.preschedule = FALSE)
+  failed <- vapply(parts, function(x) inherits(x, "try-error") || is.null(x), logical(1))
+  if(any(failed))
+    stop("cpp_shard_apply: ", sum(failed), " worker shard(s) failed: ",
+         paste(unique(unlist(lapply(parts[failed], as.character))), collapse = "; "))
+  unname(parts)
 }
