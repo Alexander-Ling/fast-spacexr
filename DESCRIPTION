@@ -9,8 +9,9 @@ Depends: R (>= 3.5.0)
 License: GNU General Public License v3.0.
 Encoding: UTF-8
 LazyData: true
-Imports: 
-	readr, 
+Imports:
+	Rcpp,
+	readr,
 	ggplot2, 
 	pals, 
 	Matrix, 
@@ -30,5 +31,7 @@ Imports:
 	locfdr,
 	metafor,
 	data.table
+LinkingTo: Rcpp, RcppArmadillo
+SystemRequirements: C++17, OpenMP (optional)
 RoxygenNote: 7.3.2
 VignetteBuilder: knitr

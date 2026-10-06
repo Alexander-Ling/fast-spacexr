@@ -163,9 +163,8 @@ fitPixels <- function(RCTD, doublet_mode = "doublet") {
   } else if(doublet_mode == "full") {
     beads = t(as.matrix(RCTD@spatialRNA@counts[RCTD@internal_vars$gene_list_reg,]))
     results = decompose_batch(RCTD@spatialRNA@nUMI, cell_type_info[[1]], beads, RCTD@internal_vars$gene_list_reg, constrain = F,
-                              max_cores = RCTD@config$max_cores, MIN.CHANGE = RCTD@config$MIN_CHANGE_REG)
-    # assemble in one call: assigning rows one at a time into a Matrix object copies the matrix each time
-    weights = do.call(rbind, lapply(results, function(r) r$weights))
+                              max_cores = RCTD@config$max_cores, MIN.CHANGE = RCTD@config$MIN_CHANGE_REG, as_matrix = TRUE)
+    weights = results$weights
     rownames(weights) = colnames(RCTD@spatialRNA@counts); colnames(weights) = RCTD@cell_type_info$renorm[[2]];
     weights = Matrix(weights)
     RCTD@results <- list(weights = weights)
@@ -196,7 +195,18 @@ fork_lapply <- function(n, max_cores, one, chunk_cap = 200L) {
   unlist(out, recursive = FALSE, use.names = FALSE)
 }
 
-decompose_batch <- function(nUMI, cell_type_means, beads, gene_list, constrain = T, OLS = F, max_cores = 8, MIN.CHANGE = 0.001) {
+decompose_batch <- function(nUMI, cell_type_means, beads, gene_list, constrain = T, OLS = F, max_cores = 8, MIN.CHANGE = 0.001,
+                            as_matrix = FALSE) {
+  res <- decompose_batch_list(nUMI, cell_type_means, beads, gene_list, constrain = constrain, OLS = OLS,
+                              max_cores = max_cores, MIN.CHANGE = MIN.CHANGE, as_matrix = as_matrix)
+  if(as_matrix && is.list(res) && is.null(res$weights))
+    res <- list(weights = do.call(rbind, lapply(res, function(r) r$weights)),
+                converged = vapply(res, function(r) r$converged, logical(1)))
+  res
+}
+
+decompose_batch_list <- function(nUMI, cell_type_means, beads, gene_list, constrain = T, OLS = F, max_cores = 8, MIN.CHANGE = 0.001,
+                                 as_matrix = FALSE) {
   #out_file = "logs/decompose_batch_log.txt"
   #if (file.exists(out_file))
   #  file.remove(out_file)
@@ -211,6 +221,23 @@ decompose_batch <- function(nUMI, cell_type_means, beads, gene_list, constrain =
                    S_mat = if(is.null(S_mat_base)) NULL else S_mat_base * nUMI[i]^2)
   }
   decompose_chunk <- function(ix) lapply(ix, decompose_one)
+  if(!OLS && !constrain && n_beads > 0 && isTRUE(getOption("spacexr.use_cpp", TRUE))) {
+    # Compiled solver (OpenMP over beads). Beads it cannot solve (non-finite values, eigen/QP failure)
+    # are re-run below with the R implementation.
+    beads_num <- beads; storage.mode(beads_num) <- "double"
+    cpp <- irwls_batch_cpp(S_base, as.numeric(nUMI), beads_num, Q_mat, SQ_mat, X_vals, K_val, MIN.CHANGE, 50L,
+                           as.integer(max(1, max_cores)))
+    W <- cpp$weights; colnames(W) <- colnames(S_base); conv <- cpp$converged
+    bad <- which(cpp$status != 0)
+    if(length(bad) > 0) {
+      warning("decompose_batch: compiled solver failed for ", length(bad), " bead(s); re-running them in R")
+      fb <- lapply(bad, decompose_one)
+      for(k in seq_along(bad)) { W[bad[k], ] <- fb[[k]]$weights; conv[bad[k]] <- fb[[k]]$converged }
+    }
+    if(as_matrix)
+      return(list(weights = W, converged = conv))
+    return(lapply(seq_len(n_beads), function(i) list(weights = W[i, ], converged = conv[i])))
+  }
   if(max_cores > 1 && n_beads > 1 && .Platform$OS.type == "unix") {
     # Forked workers inherit Q_mat, X_vals, K_val, SQ_mat and the profile matrices copy-on-write, so
     # nothing is serialized and no cluster has to be started. Beads are handed out in many small

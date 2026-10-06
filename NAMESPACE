@@ -77,3 +77,6 @@ import(doParallel)
 import(foreach)
 importClassesFrom(Matrix,Matrix)
 importClassesFrom(Matrix,dgCMatrix)
+
+useDynLib(spacexr, .registration = TRUE)
+importFrom(Rcpp, evalCpp)
