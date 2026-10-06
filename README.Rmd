@@ -25,7 +25,7 @@ overhead around the arithmetic, not the arithmetic itself. This fork changes how
    handled by forked worker processes with dynamic scheduling (`cpp_shard_apply()`). Inputs are inherited
    copy-on-write, so nothing is serialised. Upstream starts a new PSOCK cluster per call and dispatches one
    `foreach` task per pixel. (On the test machine, multithreading inside a single process did not scale, whereas
-   separate processes scale almost linearly to the physical core count.)
+   separate processes scale almost linearly to the physical core count. Platforms without `fork` (Windows) run the compiled solver on OpenMP threads inside one process, which scaled well on Windows; see "Windows" below.)
 2. **Compiled per-pixel solver.** Each worker runs a C++ solver (`src/irwls_core.h`, Rcpp/RcppArmadillo,
    single-threaded) that ports the R path `solveIRWLS.weights -> solveWLS` for `constrain = FALSE`: spline
    derivatives of the Poisson-lognormal likelihood, Hessian, eigen-based positive-semidefinite projection, and the
@@ -70,6 +70,22 @@ by upstream's large-chunk penalty. Restricting to samples that fit in a single c
 (samples under 10k pixels, 12x) and 305 -> 5,123 pixels/s (10-50k pixels, 17x); samples above 100k pixels run at about 7,000
 pixels/s against 80-130 for upstream.
 
+### Windows
+
+Built and run natively on Windows (R 4.6.0, Rtools45 / GCC 14.3, R's bundled BLAS/LAPACK; same 16-core / 32-thread CPU) and compared
+with unmodified spacexr installed in a separate library. There is no `fork` on Windows, so the compiled solvers run on OpenMP threads
+inside one process; unlike the Linux container, these scaled:
+
+| Benchmark (Windows) | Upstream | This fork |
+|---|---|---|
+| Full mode, 2,000 pixels, 1 / 4 / 8 / 16 / 28 cores | -- | 489 / 1,887 / 3,704 / 6,452 / 8,696 pixels/s |
+| Doublet mode, 400 pixels, 8 cores | 55 pixels/s | 1,333 pixels/s (24x) |
+
+Full-mode weights agree with the Linux upstream reference exactly as the Linux build does (mean |dW| 2.3e-8, max 6.7e-4, identical
+convergence flags and dominant types). Doublet-mode spot class, first/second type, class flags and convergence flags are identical for all
+400 pixels. With the compiled solver disabled (`options(spacexr.use_cpp = FALSE)`), the PSOCK fallback in `decompose_batch()` also works
+(2,000 pixels, 4 cores: max |dW| 3.4e-5 vs upstream, identical dominant types) but is slow (about 350 pixels/s).
+
 ## Agreement with upstream
 
 Reference outputs came from unmodified spacexr 2.2.1 on the same inputs (real Xenium pixels, a platform-effect/sigma
@@ -93,8 +109,7 @@ fit injected as in `fitPixels`).
 
 ## What has not been tested
 
-* **Non-unix platforms.** The PSOCK fallback (one task per worker) and `src/Makevars.win` have never been run; macOS was not
-  tried. Only Linux (conda R 4.4.3, GCC 16, OpenBLAS) was used.
+* **Platforms.** Windows was tested only with small batches (2,000 full-mode and 400 doublet-mode pixels), on R 4.6.0 with Rtools45; there was no production-scale run, no other R version, and macOS was not tried. On Linux only one configuration was used (conda R 4.4.3, GCC 16, OpenBLAS).
 * **`constrain = TRUE` and `OLS = TRUE`** through the modified `solveIRWLS.weights` / `solveWLS` helpers. They were never
   numerically compared with upstream (the one attempt failed identically in both with quadprog's "constraints are inconsistent").
   RCTD itself never uses these options. `bulk_mode` (used by `fitBulk`) was compared, see above.
