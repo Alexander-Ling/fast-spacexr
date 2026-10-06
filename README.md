@@ -1,7 +1,12 @@
-# fast-spacexr: a performance fork of spacexr
+# fastspacexr (fast-spacexr): a faster build of spacexr
 
-A fork of [dmcable/spacexr](https://github.com/dmcable/spacexr) (v2.2.1, upstream commit `9f5dc33`) that makes
-**RCTD pixel scoring 30x or more faster** on a multi-core machine. The statistical method, public API, data
+> **fastspacexr is, as close as we could manage, the same behavior as spacexr version 2.2.1, but faster.**
+> It is a performance fork of [dmcable/spacexr](https://github.com/dmcable/spacexr) (v2.2.1, upstream commit `9f5dc33`).
+> The R package is named **`fastspacexr`** (R package names cannot contain hyphens; the repository is `fast-spacexr`) and its version,
+> 2.2.1, tracks the upstream version it was built from. Load it with `library(fastspacexr)`: function names, arguments and
+> output structures are the same as spacexr's, and the only new user-visible settings are two optional R options (below).
+
+This fork makes **RCTD pixel scoring 30x or more faster** on a multi-core machine. The statistical method, public API, data
 structures and output formats are unchanged; only how the same computation is carried out differs. The original
 README follows this section unchanged.
 
@@ -31,13 +36,13 @@ remotes::install_github("Alexander-Ling/fast-spacexr")
   without it, but macOS has not been tested.
 * **Linux:** `g++` and `make` (for example `build-essential` on Debian/Ubuntu).
 
-The package keeps the name `spacexr` and version 2.2.1, so installing it **replaces any existing spacexr in the same library**. To confirm the
-fork is the one that is loaded: `exists("irwls_batch_cpp", asNamespace("spacexr"))` is `TRUE`. The repository is about 550 MB because it
-includes upstream's precomputed likelihood tables, so the first download takes a moment; a build from GitHub took about 1-1.5 minutes
-in our tests.
+The package is named `fastspacexr` (version 2.2.1, tracking upstream spacexr 2.2.1), so it can be installed alongside upstream `spacexr`
+without replacing it; load one or the other in a session, not both (they define classes and functions with the same names). Use
+`library(fastspacexr)` where upstream's documentation says `library(spacexr)`. The repository is about 550 MB because it includes
+upstream's precomputed likelihood tables, so the first download takes a moment; a build from GitHub took about 1-1.5 minutes in our tests.
+The original README below refers to the package as `spacexr`: read `fastspacexr` wherever it loads or installs the package.
 
-Tested: installation from GitHub on Windows (R 4.6.0 with Rtools45) with both `devtools::install_github()` and `pak::pak()`, and
-`R CMD INSTALL` from source on Linux (R 4.4.3, GCC 16). Not tested: the error a user sees when no compiler is present, and macOS.
+Tested: native builds from source on Windows (R 4.6.0 with Rtools45) and Linux (R 4.4.3, GCC 16), and installation from GitHub on Windows with both `devtools::install_github()` and `pak::pak()`. Not tested: the error a user sees when no compiler is present, and macOS.
 
 ## Architecture
 
@@ -72,8 +77,8 @@ Not changed: the model, `create.RCTD`, `fitBulk`, reference processing, C-SIDE, 
 * A C++17 compiler (OpenMP is not required). New dependencies: `Rcpp`, `RcppArmadillo` (`LinkingTo`). `quadprog` is still used by the R path.
 * The compiled paths run for `constrain = FALSE` (what `fitPixels` always uses). Doublet mode also needs a class table
   (always supplied by `create.RCTD`) and at least two cell types. Everything else uses the R code.
-* `options(spacexr.use_cpp = FALSE)` disables the compiled solvers.
-* `options(spacexr.parallel = "thread")` runs the compiled solvers on OpenMP threads inside one process instead of
+* `options(fastspacexr.use_cpp = FALSE)` disables the compiled solvers.
+* `options(fastspacexr.parallel = "thread")` runs the compiled solvers on OpenMP threads inside one process instead of
   worker processes (slower here; the default on platforms without `fork`).
 
 ## Performance versus unmodified spacexr
@@ -106,7 +111,7 @@ inside one process; unlike the Linux container, these scaled:
 
 Full-mode weights agree with the Linux upstream reference exactly as the Linux build does (mean |dW| 2.3e-8, max 6.7e-4, identical
 convergence flags and dominant types). Doublet-mode spot class, first/second type, class flags and convergence flags are identical for all
-400 pixels. With the compiled solver disabled (`options(spacexr.use_cpp = FALSE)`), the PSOCK fallback in `decompose_batch()` also works
+400 pixels. With the compiled solver disabled (`options(fastspacexr.use_cpp = FALSE)`), the PSOCK fallback in `decompose_batch()` also works
 (2,000 pixels, 4 cores: max |dW| 3.4e-5 vs upstream, identical dominant types) but is slow (about 350 pixels/s).
 
 ## Agreement with upstream

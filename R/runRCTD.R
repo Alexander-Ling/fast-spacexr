@@ -70,7 +70,7 @@ process_beads_batch <- function(cell_type_info, gene_list, puck, class_df = NULL
     process_bead_doublet(cell_type_info, gene_list, puck@nUMI[i], beads[i,],
                          class_df = class_df, constrain = constrain, MIN.CHANGE = MIN.CHANGE,
                          CONFIDENCE_THRESHOLD = CONFIDENCE_THRESHOLD, DOUBLET_THRESHOLD = DOUBLET_THRESHOLD)
-  if(!constrain && !is.null(class_df) && dim(beads)[1] > 0 && isTRUE(getOption("spacexr.use_cpp", TRUE)) &&
+  if(!constrain && !is.null(class_df) && dim(beads)[1] > 0 && isTRUE(getOption("fastspacexr.use_cpp", TRUE)) &&
      length(cell_type_info[[2]]) >= 2) {
     # compiled doublet search; beads it cannot handle are re-run below with process_bead_doublet
     results <- process_beads_doublet_cpp(cell_type_info, gene_list, puck@nUMI, beads, class_df, MIN.CHANGE,
@@ -227,7 +227,7 @@ decompose_batch_list <- function(nUMI, cell_type_means, beads, gene_list, constr
                    S_mat = if(is.null(S_mat_base)) NULL else S_mat_base * nUMI[i]^2)
   }
   decompose_chunk <- function(ix) lapply(ix, decompose_one)
-  if(!OLS && !constrain && n_beads > 0 && isTRUE(getOption("spacexr.use_cpp", TRUE))) {
+  if(!OLS && !constrain && n_beads > 0 && isTRUE(getOption("fastspacexr.use_cpp", TRUE))) {
     # Compiled solver (OpenMP over beads). Beads it cannot solve (non-finite values, eigen/QP failure)
     # are re-run below with the R implementation.
     beads_num <- beads; storage.mode(beads_num) <- "double"
@@ -355,10 +355,10 @@ process_beads_doublet_cpp <- function(cell_type_info, gene_list, nUMI, beads, cl
 # slower beyond ~4 threads). Shards are small (about n / (4 * workers) beads) and handed out dynamically
 # so that unevenly expensive beads do not leave workers idle. The inputs are inherited copy-on-write.
 # Elsewhere (no fork) the whole batch runs in this process with `max_cores` OpenMP threads.
-# Set options(spacexr.parallel = "thread") to force in-process threading on unix as well.
+# Set options(fastspacexr.parallel = "thread") to force in-process threading on unix as well.
 cpp_shard_apply <- function(n, max_cores, fn) {
   max_cores <- as.integer(max(1, max_cores))
-  use_proc <- .Platform$OS.type == "unix" && max_cores > 1 && n > 1 && !identical(getOption("spacexr.parallel"), "thread")
+  use_proc <- .Platform$OS.type == "unix" && max_cores > 1 && n > 1 && !identical(getOption("fastspacexr.parallel"), "thread")
   if(!use_proc)
     return(list(fn(seq_len(n), max_cores)))
   workers <- max(1L, min(max_cores, parallel::detectCores(), n))

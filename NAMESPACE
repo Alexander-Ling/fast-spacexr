@@ -78,5 +78,5 @@ import(foreach)
 importClassesFrom(Matrix,Matrix)
 importClassesFrom(Matrix,dgCMatrix)
 
-useDynLib(spacexr, .registration = TRUE)
+useDynLib(fastspacexr, .registration = TRUE)
 importFrom(Rcpp, evalCpp)

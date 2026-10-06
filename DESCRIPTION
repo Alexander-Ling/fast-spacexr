@@ -1,10 +1,15 @@
-Package: spacexr
+Package: fastspacexr
 Type: Package
-Title: SpatialeXpressionR: Cell type identification and cell type-specific differential expression in spatial transcriptomics
+Title: fastspacexr: a faster drop-in build of spacexr (RCTD and C-SIDE for spatial transcriptomics)
 Version: 2.2.1
-Author: Dylan Cable
-Maintainer: <dcable@mit.edu>
-Description: cell type identification and cell type-specific differential expression for spatial transcriptomics
+Author: Dylan Cable (original spacexr); Alexander Ling (fastspacexr modifications)
+Maintainer: Alexander Ling <alling@bwh.harvard.edu>
+Description: fastspacexr is a performance fork of spacexr 2.2.1 (https://github.com/dmcable/spacexr). It is intended to behave, as
+    close as we could manage, the same as spacexr 2.2.1 -- same functions, arguments and model -- but faster: compiled per-pixel
+    solvers and process-level parallelism. The original package's description follows. Cell type identification and cell
+    type-specific differential expression for spatial transcriptomics.
+URL: https://github.com/Alexander-Ling/fast-spacexr
+BugReports: https://github.com/Alexander-Ling/fast-spacexr/issues
 Depends: R (>= 3.5.0)
 License: GNU General Public License v3.0.
 Encoding: UTF-8

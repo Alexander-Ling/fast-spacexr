@@ -2,14 +2,14 @@
 # Generator token: 10BE3573-1514-4C36-9D1C-5A225CD40393
 
 bound_qp_cpp <- function(D, d, lb) {
-    .Call(`_spacexr_bound_qp_cpp`, D, d, lb)
+    .Call(`_fastspacexr_bound_qp_cpp`, D, d, lb)
 }
 
 doublet_batch_cpp <- function(S_base, nUMI, beads, Q_mat, SQ_mat, X_vals, K_val, min_change, cls, conf_thresh, doublet_thresh, n_threads) {
-    .Call(`_spacexr_doublet_batch_cpp`, S_base, nUMI, beads, Q_mat, SQ_mat, X_vals, K_val, min_change, cls, conf_thresh, doublet_thresh, n_threads)
+    .Call(`_fastspacexr_doublet_batch_cpp`, S_base, nUMI, beads, Q_mat, SQ_mat, X_vals, K_val, min_change, cls, conf_thresh, doublet_thresh, n_threads)
 }
 
 irwls_batch_cpp <- function(S_base, nUMI, beads, Q_mat, SQ_mat, X_vals, K_val, min_change, n_iter, n_threads) {
-    .Call(`_spacexr_irwls_batch_cpp`, S_base, nUMI, beads, Q_mat, SQ_mat, X_vals, K_val, min_change, n_iter, n_threads)
+    .Call(`_fastspacexr_irwls_batch_cpp`, S_base, nUMI, beads, Q_mat, SQ_mat, X_vals, K_val, min_change, n_iter, n_threads)
 }
 

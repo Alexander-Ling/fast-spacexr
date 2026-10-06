@@ -151,13 +151,13 @@ convert.old.RCTD <- function(myRCTD) {
    } else {
       ref <- myRCTD@reference
    }
-   if(attr(class(myRCTD@spatialRNA),'package') != 'spacexr')
+   if(attr(class(myRCTD@spatialRNA),'package') != 'fastspacexr')
       myRCTD@spatialRNA <- coerce_old(myRCTD@spatialRNA)
    if(is.null(attr(myRCTD, 'originalSpatialRNA')))
       myRCTD@originalSpatialRNA <- myRCTD@spatialRNA
-   if(attr(class(myRCTD@originalSpatialRNA),'package') != 'spacexr')
+   if(attr(class(myRCTD@originalSpatialRNA),'package') != 'fastspacexr')
       myRCTD@originalSpatialRNA <- coerce_old(myRCTD@originalSpatialRNA)
-   if(attr(class(ref),'package') != 'spacexr')
+   if(attr(class(ref),'package') != 'fastspacexr')
       ref <- coerce_deglam_reference(ref)
    new("RCTD", spatialRNA = myRCTD@spatialRNA, originalSpatialRNA = myRCTD@spatialRNA, reference = ref,
        config = myRCTD@config, cell_type_info = myRCTD@cell_type_info, internal_vars = myRCTD@internal_vars,

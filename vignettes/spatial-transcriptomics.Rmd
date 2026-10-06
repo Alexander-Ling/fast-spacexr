@@ -14,7 +14,7 @@ vignette: >
 ---
 
 ```{r setup}
-library(spacexr)
+library(fastspacexr)
 library(Matrix)
 ```
 

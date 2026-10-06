@@ -16,7 +16,7 @@ vignette: |
 
 ```{r setup}
 
-library(spacexr)
+library(fastspacexr)
 library(Matrix)
 library(doParallel)
 library(ggplot2)

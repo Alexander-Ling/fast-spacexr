@@ -38,23 +38,23 @@ solve_sq <- function(Q_mat, X_vals) {
 set_global_Q_all <- function() {
   message('set_global_Q_all: begin')
   Q_mat_all <<- get_Q_all()
-  X_vals <<- readRDS(system.file("extdata", "Qmat/X_vals.rds", package = "spacexr"))
+  X_vals <<- readRDS(system.file("extdata", "Qmat/X_vals.rds", package = "fastspacexr"))
   SQ_mat_all <<- lapply(Q_mat_all, function(x) solve_sq(x, X_vals))
   message('set_global_Q_all: finished')
 }
 
 set_likelihood_vars_sigma <- function(sigma) {
   Q_mat_all <- get_Q_all()
-  X_vals <- readRDS(system.file("extdata", "Qmat/X_vals.rds", package = "spacexr"))
+  X_vals <- readRDS(system.file("extdata", "Qmat/X_vals.rds", package = "fastspacexr"))
   set_likelihood_vars(Q_mat_all[[sigma]], X_vals)
 }
 
 get_Q_all <- function() {
-  Q1 <- readRDS(system.file("extdata", "Qmat/Q_mat_1.rds", package = "spacexr"))
-  Q2 <- readRDS(system.file("extdata", "Qmat/Q_mat_2.rds", package = "spacexr"))
-  Q3 <- readRDS(system.file("extdata", "Qmat/Q_mat_3.rds", package = "spacexr"))
-  Q4 <- readRDS(system.file("extdata", "Qmat/Q_mat_4.rds", package = "spacexr"))
-  Q5 <- readRDS(system.file("extdata", "Qmat/Q_mat_5.rds", package = "spacexr"))
+  Q1 <- readRDS(system.file("extdata", "Qmat/Q_mat_1.rds", package = "fastspacexr"))
+  Q2 <- readRDS(system.file("extdata", "Qmat/Q_mat_2.rds", package = "fastspacexr"))
+  Q3 <- readRDS(system.file("extdata", "Qmat/Q_mat_3.rds", package = "fastspacexr"))
+  Q4 <- readRDS(system.file("extdata", "Qmat/Q_mat_4.rds", package = "fastspacexr"))
+  Q5 <- readRDS(system.file("extdata", "Qmat/Q_mat_5.rds", package = "fastspacexr"))
   Q_mat_all <- c(Q1, Q2, Q3, Q4, Q5)
 }
 

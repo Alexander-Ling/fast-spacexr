@@ -13,7 +13,7 @@ Rcpp::Rostream<false>& Rcpp::Rcerr = Rcpp::Rcpp_cerr_get();
 
 // bound_qp_cpp
 Rcpp::List bound_qp_cpp(const arma::mat& D, const arma::vec& d, const arma::vec& lb);
-RcppExport SEXP _spacexr_bound_qp_cpp(SEXP DSEXP, SEXP dSEXP, SEXP lbSEXP) {
+RcppExport SEXP _fastspacexr_bound_qp_cpp(SEXP DSEXP, SEXP dSEXP, SEXP lbSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -26,7 +26,7 @@ END_RCPP
 }
 // doublet_batch_cpp
 Rcpp::List doublet_batch_cpp(const arma::mat& S_base, const arma::vec& nUMI, const arma::mat& beads, const arma::mat& Q_mat, const arma::mat& SQ_mat, const arma::vec& X_vals, const double K_val, const double min_change, const Rcpp::IntegerVector& cls, const double conf_thresh, const double doublet_thresh, const int n_threads);
-RcppExport SEXP _spacexr_doublet_batch_cpp(SEXP S_baseSEXP, SEXP nUMISEXP, SEXP beadsSEXP, SEXP Q_matSEXP, SEXP SQ_matSEXP, SEXP X_valsSEXP, SEXP K_valSEXP, SEXP min_changeSEXP, SEXP clsSEXP, SEXP conf_threshSEXP, SEXP doublet_threshSEXP, SEXP n_threadsSEXP) {
+RcppExport SEXP _fastspacexr_doublet_batch_cpp(SEXP S_baseSEXP, SEXP nUMISEXP, SEXP beadsSEXP, SEXP Q_matSEXP, SEXP SQ_matSEXP, SEXP X_valsSEXP, SEXP K_valSEXP, SEXP min_changeSEXP, SEXP clsSEXP, SEXP conf_threshSEXP, SEXP doublet_threshSEXP, SEXP n_threadsSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -48,7 +48,7 @@ END_RCPP
 }
 // irwls_batch_cpp
 Rcpp::List irwls_batch_cpp(const arma::mat& S_base, const arma::vec& nUMI, const arma::mat& beads, const arma::mat& Q_mat, const arma::mat& SQ_mat, const arma::vec& X_vals, const double K_val, const double min_change, const int n_iter, const int n_threads);
-RcppExport SEXP _spacexr_irwls_batch_cpp(SEXP S_baseSEXP, SEXP nUMISEXP, SEXP beadsSEXP, SEXP Q_matSEXP, SEXP SQ_matSEXP, SEXP X_valsSEXP, SEXP K_valSEXP, SEXP min_changeSEXP, SEXP n_iterSEXP, SEXP n_threadsSEXP) {
+RcppExport SEXP _fastspacexr_irwls_batch_cpp(SEXP S_baseSEXP, SEXP nUMISEXP, SEXP beadsSEXP, SEXP Q_matSEXP, SEXP SQ_matSEXP, SEXP X_valsSEXP, SEXP K_valSEXP, SEXP min_changeSEXP, SEXP n_iterSEXP, SEXP n_threadsSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -68,13 +68,13 @@ END_RCPP
 }
 
 static const R_CallMethodDef CallEntries[] = {
-    {"_spacexr_bound_qp_cpp", (DL_FUNC) &_spacexr_bound_qp_cpp, 3},
-    {"_spacexr_doublet_batch_cpp", (DL_FUNC) &_spacexr_doublet_batch_cpp, 12},
-    {"_spacexr_irwls_batch_cpp", (DL_FUNC) &_spacexr_irwls_batch_cpp, 10},
+    {"_fastspacexr_bound_qp_cpp", (DL_FUNC) &_fastspacexr_bound_qp_cpp, 3},
+    {"_fastspacexr_doublet_batch_cpp", (DL_FUNC) &_fastspacexr_doublet_batch_cpp, 12},
+    {"_fastspacexr_irwls_batch_cpp", (DL_FUNC) &_fastspacexr_irwls_batch_cpp, 10},
     {NULL, NULL, 0}
 };
 
-RcppExport void R_init_spacexr(DllInfo *dll) {
+RcppExport void R_init_fastspacexr(DllInfo *dll) {
     R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
     R_useDynamicSymbols(dll, FALSE);
 }
