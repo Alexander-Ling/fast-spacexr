@@ -4,6 +4,148 @@ output: github_document
 
 <!-- README.md is generated from README.Rmd. Please edit that file -->
 
+# fast-spacexr: a performance fork of spacexr
+
+This is a fork of [dmcable/spacexr](https://github.com/dmcable/spacexr) (v2.2.1, upstream commit
+`9f5dc33`) that makes **RCTD pixel scoring much faster** without changing its model or its intended
+results. The statistical method, the public API, the data structures and the output formats are
+unchanged; everything below is about how the same computation is carried out. The original README
+follows unchanged after this section.
+
+> **Status: experimental, validated on one use case.** The changes were developed while scoring ~10 million Xenium entities with upstream spacexr, and checked on
+> Xenium data (345 genes x 19 cell types, a 232k-cell scRNA reference). **The fork has not yet been used for that
+> production run.** The checks are described below, including what has **not** been tested. If you
+> need results bit-for-bit identical to upstream, use upstream: even with `options(spacexr.use_cpp = FALSE)` (which disables only the
+> compiled solvers) the R-level changes alter weights at the ~1e-5 level (see "Results compared with upstream"). The commits in this fork were
+> written with the assistance of an AI coding assistant (Claude Code) and reviewed through the tests
+> listed here; they have not had an independent human code review.
+
+## Why
+
+RCTD scores each pixel/cell independently, so scoring should scale linearly with the number of
+pixels and nearly linearly with the number of cores. In practice, on a dataset of millions of
+entities we measured the opposite: **two cores were slower than one**, and 28 cores gave about 300
+entities/s although a single core could do about 80. Profiling showed that the arithmetic was not the
+problem; the surrounding R code was:
+
+* `decompose_batch()` started a new PSOCK cluster on every call and dispatched **one `foreach` task
+  per pixel**, serialising the likelihood tables to the workers each time.
+* `solveIRWLS.weights()` rebuilt a `K(K+1)/2`-column pairwise-product matrix with a double loop and
+  `<<-` global assignments **for every pixel**, although it depends only on the reference profiles.
+* `eigen()` was called without `symmetric = TRUE` (an `all.equal()` symmetry check cost ~20% of the
+  runtime) and the spectral norm was computed with a separate SVD.
+* `fitPixels()` (full mode) and `gather_results()` (doublet mode) filled a `Matrix` / `data.frame` one row
+  at a time, copying the whole object on every assignment (quadratic in the number of pixels).
+* The remaining per-pixel work (spline derivatives, a 19x19 eigendecomposition, a small quadratic
+  program, and in doublet mode dozens of such solves per pixel for the pair search) ran in the R
+  interpreter.
+
+## What changed
+
+| Area | Change |
+|---|---|
+| Parallel dispatch (`decompose_batch`, `process_beads_batch`, `process_beads_multi`) | On unix, forked workers (`parallel::mclapply`) over small chunks with dynamic scheduling, via a new `fork_lapply()`. Likelihood tables and profiles are inherited copy-on-write, not serialised. The original PSOCK/`foreach` code is kept for non-unix platforms (see "Not tested"). |
+| Per-pixel setup | The reference-profile matrix restricted to the gene list and the pairwise-product matrix `S_mat` are built **once per batch** (`build_S_mat()`), not per pixel; `S_mat` is passed explicitly instead of being a `<<-` global. |
+| Linear algebra | `eigen(symmetric = TRUE)`, spectral norm taken from the same eigenvalues, Hessian assembled with one indexed assignment instead of a loop. |
+| Result assembly | `fitPixels()` (full), `choose_sigma_c()` and `gather_results()` (doublet) build their outputs column-wise in one pass. |
+| **Compiled core, full mode** | `src/irwls_core.h` + `src/irwls.cpp` (Rcpp/RcppArmadillo, OpenMP): a port of `solveIRWLS.weights` -> `solveWLS` for `constrain = FALSE` (spline derivatives, Hessian, PSD projection, bound-constrained QP) over many pixels in parallel. `quadprog::solve.QP` is replaced there by a warm-started primal active-set solver for the same strictly convex QP. |
+| **Compiled core, doublet mode** | `doublet_batch_cpp()` ports `process_bead_doublet` for `constrain = FALSE` with a class table: full fit, candidate selection, singlet and pair scores, `check_pairs_type`, the reject/singlet/doublet_certain/doublet_uncertain logic, and the final two-type fit. |
+| Safety | Every table lookup is bounds-checked and non-finite input is rejected before any float-to-int cast; dimensions are validated; a pixel the compiled code cannot solve is reported through a status code and **re-run with the original R implementation** (NA weights, with a warning, if even R fails) instead of crashing or aborting the batch. |
+
+Not changed: the model, `create.RCTD`, `fitBulk` (platform-effect estimation, still R), reference
+processing, the doublet/multi/full statistics, C-SIDE, plotting, the data classes.
+
+### Switches and requirements
+
+* `options(spacexr.use_cpp = FALSE)` disables the compiled solvers (the R implementation, with the
+  non-compiled speedups above, is used instead; results are then still not bit-identical to upstream).
+* Building needs a C++17 compiler; OpenMP is used if available. `Rcpp` and `RcppArmadillo` are new
+  dependencies (`LinkingTo: Rcpp, RcppArmadillo`). `quadprog` is still required (used by the R path).
+* The compiled paths run only for `constrain = FALSE` (what `fitPixels`/RCTD always uses). Doublet mode additionally
+  needs a class table (always supplied by `create.RCTD`) and at least two cell types. Everything else
+  uses the R code.
+
+## Measured speed-up (single machine, R 4.4.3, 345 genes x 19 types)
+
+| Mode | Original | Fork | Notes |
+|---|---|---|---|
+| Full, 1 core | 82 pixels/s | 609 pixels/s (7.4x) | 2,000 pixels, same inputs |
+| Full, 1 core, R-level changes only | 82 | 164 (2.0x) | before the compiled core |
+| Full, 2 cores (R-level changes only) | 65 | 304 (4.7x) | original is *slower* with 2 cores than with 1 |
+| Doublet, 1 core | 12 pixels/s | 256 pixels/s (21x) | 300 pixels |
+| Doublet, 8 cores | 40 | 361 (8.9x) | measured while the machine was busy with another job; not a clean scaling measurement |
+
+Clean scaling at 16-32 cores has **not** been measured yet.
+
+## Results compared with upstream
+
+Reference outputs were produced with unmodified spacexr 2.2.1 on the same inputs (real Xenium
+entities, a real global platform-effect/sigma fit injected as in `fitPixels`).
+
+**Full mode (compiled core), 2,000 pixels:** mean |dW| = 2.3e-8; max |dW| = 6.7e-4 (11 of 2,000 pixels differ by
+more than 1e-6); convergence flags identical; dominant type identical for all pixels.
+The residual differences are due to the solver's stopping rule (`MIN_CHANGE = 1e-3`):
+both implementations stop about 2e-3 from the fully converged solution and can stop on different iterations.
+Run to a tight tolerance the compiled solver agrees with a tightly converged R solution to 1e-5..1e-7 and reaches
+the same likelihood. End to end (`create.RCTD` + `fitPixels`, 4,000 pixels): dominant type identical, max |dW| 1.3e-4.
+
+**Doublet mode (compiled core), 2,000 pixels** (all four spot classes present): spot class, first/second type,
+first/second-class flags and both convergence flags **identical for every pixel**; `min_score` within 2e-9,
+`singlet_score` within 1e-12, doublet weights within 2e-11, `score_mat` values within 2e-9 (dimnames identical; the compiled path returns it as a symmetric `Matrix` class, the original as `dgCMatrix`).
+Full-fit weights differ by up to 7e-4 for the stopping-rule reason above. Discrete outputs could in principle
+flip when two scores are within numerical noise of a decision threshold; none did in 2,000 pixels.
+
+**Other changes:** `gather_results()` output is identical to the original (`all.equal` on `results_df`, `weights`,
+`weights_doublet`, `score_mat`, 100 pixels). Doublet-mode dispatch change alone (R solver): spot class and types identical,
+doublet weights within 1e-11.
+
+**Platform-effect fit and sigma** (`create.RCTD` -> `fitBulk` -> `choose_sigma_c`, 3,000 pixels, same seed): bulk proportions
+identical to 6e-14, renormalised reference profiles identical to 2e-12 (relative), estimated sigma identical (0.84).
+(`fitBulk` runs through the modified R helpers, `choose_sigma_c` through the compiled solver.)
+
+## What has not been tested
+
+Please treat these as unverified:
+
+* **Non-unix platforms.** The Windows/PSOCK fallback in `decompose_batch()` was rewritten (one task per worker) but has never been run;
+  `src/Makevars.win` has never been built; macOS has not been tried. Only Linux (conda R 4.4.3, GCC 16, OpenBLAS) was used.
+* **`constrain = TRUE` and `OLS = TRUE`** through the modified `solveIRWLS.weights` / `solveWLS` helpers. The code is shared with the
+  compared paths but these branches were never numerically compared with upstream: the one attempt (calling `decompose_batch(constrain = TRUE)`
+  on renormalised profiles) failed identically in upstream and in the fork with quadprog's "constraints are inconsistent", so it
+  says nothing about equivalence. RCTD itself never uses these options. (`bulk_mode`, used by `fitBulk`, *was* compared; see above.)
+* **Multi mode** (`process_beads_multi`): only its dispatch was changed (forked chunks); it was never run.
+* **C-SIDE** and every vignette, example and plotting function: not run, and there is no upstream test suite.
+  `R CMD check` has not been run.
+* **Other data.** Only Xenium (345 genes, 19 types, likelihood table with `K_val = 1000`). Other platforms (Visium, Slide-seq, MERFISH),
+  much larger gene lists or cell-type counts, and non-default `UMI_min`/`gene_cutoff`/`CONFIDENCE_THRESHOLD` settings were not tested.
+* **Scale.** The largest batch run through the fork was thousands of pixels. Behavior and memory for batches of millions
+  (including `fork_lapply()` chunking and the dense `beads` matrix that `fitPixels` still builds) are untested here.
+* **Parallel scaling beyond 8 threads**, and other BLAS/LAPACK builds (the compiled code calls LAPACK from several OpenMP threads;
+  fine with the OpenBLAS used here, not checked elsewhere).
+* **Memory safety of the R-facing glue.** The numerical kernel is tested without R under AddressSanitizer, UBSan and LeakSanitizer
+  (clean; results bitwise identical for 1-32 threads; no memory growth over repeated calls), but plain R aborts at startup
+  under an ASan preload, so `src/irwls.cpp` (the Rcpp wrapper) was exercised only through normal R calls. ThreadSanitizer was not
+  run (false positives with the OpenMP runtime); race-freedom rests on the determinism test and on each thread writing only its own pixel.
+
+## Tests in this repository
+
+`tests/cpp/` holds a standalone harness for the compiled kernel (no R needed) and instructions; see `tests/cpp/README.md`.
+The R-level comparisons against upstream quoted above were run with scripts outside this repository (they depend on
+private data); they are summarised here rather than shipped.
+
+## Commit history
+
+1. `e9cf376` hoist per-pixel work, fork-based chunked parallelism (full mode)
+2. `407ef1e` fork-based dispatch for doublet/multi mode; vectorised `gather_results` / `choose_sigma_c`
+3. `ced4078` compiled (Rcpp/RcppArmadillo/OpenMP) core for full-mode IRWLS
+4. `80351cb` hardening (bounds checks, validation, R fallback) and the sanitizer harness
+5. `4368427` compiled doublet mode
+
+Original author: Dylan Cable (spacexr). This fork keeps upstream's GPL-3 licence.
+
+---
+
+
 ```{r, include = FALSE}
 knitr::opts_chunk$set(
   collapse = TRUE,
