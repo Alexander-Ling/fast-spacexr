@@ -37,7 +37,9 @@ struct Tables {
 // First and second derivative of the Poisson-lognormal log-likelihood at count yd and rate lam, by
 // cubic-spline interpolation in the precomputed Q table. Mirrors calc_Q_all() (d1_vec, d2_vec).
 // Returns false (touching no table) if the inputs are not finite or would index outside the tables.
-inline bool q_deriv(double yd, double lam, const Tables& T, double& d1, double& d2) {
+// With WANT_D0 it also returns d0, the interpolated log-likelihood term used for scoring.
+template <bool WANT_D0>
+inline bool q_eval(double yd, double lam, const Tables& T, double& d0, double& d1, double& d2) {
   const double eps = 1e-4, delta = 1e-6;
   if (!std::isfinite(yd) || !std::isfinite(lam)) return false;
   if (yd < 0.0 || yd > static_cast<double>(T.nrow - 1)) return false;
@@ -57,9 +59,16 @@ inline bool q_deriv(double yd, double lam, const Tables& T, double& d1, double& 
   const double diff1 = lam - ti1, diff2 = ti - lam;
   const double diff3 = fti / hi - zi * hi / 6.0, diff4 = fti1 / hi - zi1 * hi / 6.0;
   const double zdi = zi / hi, zdi1 = zi1 / hi;
+  if (WANT_D0)
+    d0 = zdi * diff1 * diff1 * diff1 / 6.0 + zdi1 * diff2 * diff2 * diff2 / 6.0 + diff3 * diff1 + diff4 * diff2;
   d1 = zdi * diff1 * diff1 / 2.0 - zdi1 * diff2 * diff2 / 2.0 + diff3 - diff4;
   d2 = zdi * diff1 + zdi1 * diff2;
   return true;
+}
+
+inline bool q_deriv(double yd, double lam, const Tables& T, double& d1, double& d2) {
+  double d0 = 0.0;
+  return q_eval<false>(yd, lam, T, d0, d1, d2);
 }
 
 // min 1/2 s'Ds - d's   subject to  s >= lb   (lb <= 0, so s = 0 is feasible).
@@ -145,6 +154,188 @@ inline int irwls_bead(const arma::mat& Sb, const double nUMI, const double* B, c
   }
   w = sol; iters = it; converged = (change <= min_change);
   return 0;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Doublet mode (port of process_bead_doublet for constrain = FALSE with a class table).
+// ---------------------------------------------------------------------------------------------
+
+// Negative log-likelihood score of rate vector `pred` for counts `B` (already clipped to K_val):
+// sum_g -d0_g, as calc_log_l_vec(). Returns false if any lookup fails.
+inline bool neg_loglik(const arma::vec& pred, const double* B, const Tables& T, double& total) {
+  total = 0.0;
+  for (arma::uword g = 0; g < pred.n_elem; ++g) {
+    double d0, d1, d2;
+    if (!q_eval<true>(B[g], pred[g], T, d0, d1, d2)) return false;
+    total -= d0;
+  }
+  return std::isfinite(total);
+}
+
+// Solve the IRWLS problem restricted to the given columns of Sb (decompose_sparse).
+inline int solve_sub(const arma::mat& Sb, const std::vector<arma::uword>& cols, const double nUMI, const double* B,
+                     const Tables& T, const double min_change, const int n_iter, arma::vec& w, bool& converged) {
+  const arma::mat sub = Sb.cols(arma::uvec(cols));
+  int it = 0;
+  return irwls_bead(sub, nUMI, B, T, min_change, n_iter, w, it, converged);
+}
+
+// score_mode of decompose_sparse: fit the columns, then the negative log-likelihood of the (unnormalised) fit.
+inline int sparse_score(const arma::mat& Sb, const std::vector<arma::uword>& cols, const double nUMI, const double* B,
+                        const Tables& T, const double min_change, double& score) {
+  arma::vec w; bool cv = false;
+  const int st = solve_sub(Sb, cols, nUMI, B, T, min_change, 25, w, cv);
+  if (st != 0) return st;
+  const arma::mat sub = Sb.cols(arma::uvec(cols)) * nUMI;
+  const arma::vec pred = sub * w;
+  return neg_loglik(pred, B, T, score) ? 0 : 4;
+}
+
+struct DoubletBead {
+  arma::vec all_weights, doublet_weights, singlet_scores;
+  arma::mat score_mat;
+  std::vector<int> cand;                 // candidate type indices (0-based), in R's order
+  int first = -1, second = -1;           // 0-based type indices
+  int spot_class = 0;                    // 1 reject, 2 singlet, 3 doublet_certain, 4 doublet_uncertain
+  double min_score = 0.0, singlet_score = 0.0;
+  bool conv_all = false, conv_doublet = false, first_class = false, second_class = false;
+};
+
+struct PairsCheck { bool all_pairs, all_pairs_class; double singlet_score; };
+
+// check_pairs_type() with a class table (class ids per type).
+inline PairsCheck check_pairs_type(const arma::mat& score_mat, const std::vector<int>& cand, const double min_score,
+                                   const int my_type, const std::vector<int>& cls, const double qcut,
+                                   const arma::vec& singlet_scores) {
+  const int nc = static_cast<int>(cand.size());
+  // singlet score of my_type
+  double singlet = 0.0;
+  for (int a = 0; a < nc; ++a) if (cand[a] == my_type) singlet = singlet_scores[a];
+  bool all_pairs = true, all_pairs_class = true;
+  std::vector<int> other_class{my_type};
+  for (int i = 0; i < nc - 1; ++i) {
+    for (int j = i + 1; j < nc; ++j) {
+      if (score_mat(i, j) < min_score + qcut) {
+        const int t1 = cand[i], t2 = cand[j];
+        if (t1 != my_type && t2 != my_type) all_pairs = false;
+        const bool fc = cls[my_type] == cls[t1], sc = cls[my_type] == cls[t2];
+        if (!fc && !sc) all_pairs_class = false;
+        if (fc && std::find(other_class.begin(), other_class.end(), t1) == other_class.end()) other_class.push_back(t1);
+        if (sc && std::find(other_class.begin(), other_class.end(), t2) == other_class.end()) other_class.push_back(t2);
+      }
+    }
+  }
+  if (all_pairs_class && !all_pairs && other_class.size() > 1) {
+    for (std::size_t k = 1; k < other_class.size(); ++k) {
+      for (int a = 0; a < nc; ++a) if (cand[a] == other_class[k]) singlet = std::min(singlet, singlet_scores[a]);
+    }
+  }
+  return PairsCheck{all_pairs, all_pairs_class, singlet};
+}
+
+// One bead through the doublet search. Returns 0 on success, otherwise a status code.
+inline int doublet_bead(const arma::mat& Sb, const double nUMI, const double* B, const Tables& T, const double min_change,
+                        const std::vector<int>& cls, const double qcut, const double dthr, DoubletBead& out) {
+  const arma::uword K = Sb.n_cols;
+  int it = 0;
+  int st = irwls_bead(Sb, nUMI, B, T, min_change, 50, out.all_weights, it, out.conv_all);
+  if (st != 0) return st;
+  // candidate types
+  out.cand.clear();
+  for (arma::uword k = 0; k < K; ++k) if (out.all_weights[k] > 0.01) out.cand.push_back(static_cast<int>(k));
+  if (out.cand.empty()) for (arma::uword k = 0; k < std::min<arma::uword>(3, K); ++k) out.cand.push_back(static_cast<int>(k));
+  if (out.cand.size() == 1) out.cand.push_back(out.cand[0] == 0 ? 1 : 0);
+  const int nc = static_cast<int>(out.cand.size());
+  // singlet scores
+  out.singlet_scores.set_size(nc);
+  for (int a = 0; a < nc; ++a) {
+    double s;
+    st = sparse_score(Sb, {static_cast<arma::uword>(out.cand[a])}, nUMI, B, T, min_change, s);
+    if (st != 0) return st;
+    out.singlet_scores[a] = s;
+  }
+  // pairwise scores
+  out.score_mat.zeros(nc, nc);
+  double min_score = 0.0; int first = -1, second = -1;
+  for (int i = 0; i < nc - 1; ++i) {
+    for (int j = i + 1; j < nc; ++j) {
+      double s;
+      st = sparse_score(Sb, {static_cast<arma::uword>(out.cand[i]), static_cast<arma::uword>(out.cand[j])}, nUMI, B, T, min_change, s);
+      if (st != 0) return st;
+      out.score_mat(i, j) = s; out.score_mat(j, i) = s;
+      if (second < 0 || s < min_score) { first = out.cand[i]; second = out.cand[j]; min_score = s; }
+    }
+  }
+  const PairsCheck p1 = check_pairs_type(out.score_mat, out.cand, min_score, first, cls, qcut, out.singlet_scores);
+  const PairsCheck p2 = check_pairs_type(out.score_mat, out.cand, min_score, second, cls, qcut, out.singlet_scores);
+  int spot; double singlet_score; bool first_class = false, second_class = false;
+  if (!p1.all_pairs_class && !p2.all_pairs_class) {
+    spot = 1; singlet_score = min_score + 2.0 * dthr;
+  } else if (p1.all_pairs_class && !p2.all_pairs_class) {
+    first_class = !p1.all_pairs; singlet_score = p1.singlet_score; spot = 4;
+  } else if (!p1.all_pairs_class && p2.all_pairs_class) {
+    first_class = !p2.all_pairs; singlet_score = p2.singlet_score; std::swap(first, second); spot = 4;
+  } else {
+    spot = 3; singlet_score = std::min(p1.singlet_score, p2.singlet_score);
+    first_class = !p1.all_pairs; second_class = !p2.all_pairs;
+    if (p2.singlet_score < p1.singlet_score) {
+      std::swap(first, second); first_class = !p2.all_pairs; second_class = !p1.all_pairs;
+    }
+  }
+  if (singlet_score - min_score < dthr) spot = 2;
+  // final two-type decomposition (not score mode): weights normalised to sum to one
+  arma::vec dw; bool cv = false;
+  st = solve_sub(Sb, {static_cast<arma::uword>(first), static_cast<arma::uword>(second)}, nUMI, B, T, min_change, 50, dw, cv);
+  if (st != 0) return st;
+  dw /= arma::accu(dw);
+  out.doublet_weights = dw; out.conv_doublet = cv;
+  out.first = first; out.second = second; out.spot_class = spot;
+  out.min_score = min_score; out.singlet_score = singlet_score; out.first_class = first_class; out.second_class = second_class;
+  return 0;
+}
+
+struct DoubletBatchResult {
+  std::vector<DoubletBead> beads;
+  std::vector<int> status;
+};
+
+inline DoubletBatchResult doublet_batch(const arma::mat& S_base, const arma::vec& nUMI, const arma::mat& beads,
+                                        const arma::mat& Q_mat, const arma::mat& SQ_mat, const arma::vec& X_vals,
+                                        const double K_val, const double min_change, const std::vector<int>& cls,
+                                        const double qcut, const double dthr, const int n_threads) {
+  const arma::uword nb = beads.n_rows, K = S_base.n_cols, ng = S_base.n_rows;
+  if (beads.n_cols != ng) throw std::invalid_argument("beads and S_base disagree on the number of genes");
+  if (nUMI.n_elem != nb) throw std::invalid_argument("nUMI must have one entry per bead");
+  if (K < 2 || ng == 0) throw std::invalid_argument("doublet mode needs at least two cell types and one gene");
+  if (cls.size() != K) throw std::invalid_argument("class vector must have one entry per cell type");
+  if (Q_mat.n_rows != SQ_mat.n_rows || Q_mat.n_cols != SQ_mat.n_cols || X_vals.n_elem != Q_mat.n_cols ||
+      Q_mat.n_cols < 3 || Q_mat.n_rows < 3)
+    throw std::invalid_argument("Q_mat, SQ_mat and X_vals have inconsistent dimensions");
+  if (!(K_val >= 0.0) || static_cast<double>(Q_mat.n_rows) < K_val + 1.0)
+    throw std::invalid_argument("K_val is larger than the Q table allows");
+  if (!(min_change >= 0.0)) throw std::invalid_argument("min_change must be >= 0");
+  if (!S_base.is_finite()) throw std::invalid_argument("S_base contains non-finite values");
+  Tables T{Q_mat.memptr(), SQ_mat.memptr(), X_vals.memptr(), static_cast<int>(Q_mat.n_rows),
+           static_cast<int>(X_vals.n_elem), X_vals.max()};
+  DoubletBatchResult R;
+  R.beads.resize(nb); R.status.assign(nb, 0);
+  const arma::mat beadsT = beads.t();
+  const int nt = std::max(1, n_threads);
+  #pragma omp parallel num_threads(nt)
+  {
+    arma::vec clipped(ng);
+    #pragma omp for schedule(dynamic, 4)
+    for (long long i = 0; i < static_cast<long long>(nb); ++i) {
+      int st = 9;
+      try {
+        const double* col = beadsT.colptr(i);
+        for (arma::uword g = 0; g < ng; ++g) clipped[g] = std::min(col[g], K_val);
+        st = doublet_bead(S_base, nUMI[i], clipped.memptr(), T, min_change, cls, qcut, dthr, R.beads[i]);
+      } catch (...) { st = 9; }
+      R.status[i] = st;
+    }
+  }
+  return R;
 }
 
 struct BatchResult {

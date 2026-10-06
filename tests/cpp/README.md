@@ -6,7 +6,7 @@ ASan `LD_PRELOAD`, so the kernel is kept free of the R API for exactly this reas
 
 What it checks:
 
-* a normal batch solves every bead, and the result is bitwise identical for 1, 2, 4, 8 and 32 threads
+* a normal batch (full mode and doublet mode) solves every bead, and the result is bitwise identical for 1, 2, 4, 8 and 32 threads
   (a data race between beads would show up as a difference);
 * hostile inputs are reported through `status` and never crash: NaN / negative / infinite / zero /
   huge counts and nUMI, one cell type, two genes, rank-deficient and badly scaled references;

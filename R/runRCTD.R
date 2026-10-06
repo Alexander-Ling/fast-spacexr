@@ -66,11 +66,17 @@ process_beads_batch <- function(cell_type_info, gene_list, puck, class_df = NULL
   #out_file = "logs/process_beads_log.txt"
   #if (file.exists(out_file))
   #  file.remove(out_file)
-  if(MAX_CORES > 1 && .Platform$OS.type == "unix" && dim(beads)[1] > 1) {
-    results <- fork_lapply(dim(beads)[1], MAX_CORES, function(i)
-      process_bead_doublet(cell_type_info, gene_list, puck@nUMI[i], beads[i,],
-                           class_df = class_df, constrain = constrain, MIN.CHANGE = MIN.CHANGE,
-                           CONFIDENCE_THRESHOLD = CONFIDENCE_THRESHOLD, DOUBLET_THRESHOLD = DOUBLET_THRESHOLD))
+  one_bead <- function(i)
+    process_bead_doublet(cell_type_info, gene_list, puck@nUMI[i], beads[i,],
+                         class_df = class_df, constrain = constrain, MIN.CHANGE = MIN.CHANGE,
+                         CONFIDENCE_THRESHOLD = CONFIDENCE_THRESHOLD, DOUBLET_THRESHOLD = DOUBLET_THRESHOLD)
+  if(!constrain && !is.null(class_df) && dim(beads)[1] > 0 && isTRUE(getOption("spacexr.use_cpp", TRUE)) &&
+     length(cell_type_info[[2]]) >= 2) {
+    # compiled doublet search; beads it cannot handle are re-run below with process_bead_doublet
+    results <- process_beads_doublet_cpp(cell_type_info, gene_list, puck@nUMI, beads, class_df, MIN.CHANGE,
+                                         CONFIDENCE_THRESHOLD, DOUBLET_THRESHOLD, MAX_CORES, one_bead)
+  } else if(MAX_CORES > 1 && .Platform$OS.type == "unix" && dim(beads)[1] > 1) {
+    results <- fork_lapply(dim(beads)[1], MAX_CORES, one_bead)
   } else if(MAX_CORES > 1) {
     numCores = parallel::detectCores();
     if(parallel::detectCores() > MAX_CORES)
@@ -275,3 +281,48 @@ decompose_batch_list <- function(nUMI, cell_type_means, beads, gene_list, constr
 }
 
 
+
+# Doublet search for all beads in compiled code (see doublet_batch_cpp). Returns the same list of per-bead
+# results as process_beads_batch's R path, so gather_results() is unchanged. Beads the compiled code cannot
+# handle (status != 0) are computed with `fallback(i)` (process_bead_doublet).
+process_beads_doublet_cpp <- function(cell_type_info, gene_list, nUMI, beads, class_df, MIN.CHANGE,
+                                      CONFIDENCE_THRESHOLD, DOUBLET_THRESHOLD, max_cores, fallback) {
+  S_base <- data.matrix(cell_type_info[[1]][gene_list,])
+  type_names <- cell_type_info[[2]]
+  cls_id <- as.integer(factor(as.character(class_df[type_names, "class"])))
+  beads_num <- beads; storage.mode(beads_num) <- "double"
+  cpp <- tryCatch(doublet_batch_cpp(S_base, as.numeric(nUMI), beads_num, Q_mat, SQ_mat, X_vals, K_val, MIN.CHANGE,
+                                    cls_id, CONFIDENCE_THRESHOLD, DOUBLET_THRESHOLD, as.integer(max(1, max_cores))),
+                  error = function(e) {
+                    warning("process_beads_batch: compiled doublet search rejected its inputs (", conditionMessage(e),
+                            "); using the R implementation")
+                    NULL
+                  })
+  n <- dim(beads)[1]
+  if(is.null(cpp)) {
+    if(max_cores > 1 && .Platform$OS.type == "unix" && n > 1)
+      return(fork_lapply(n, max_cores, fallback))
+    return(lapply(seq_len(n), fallback))
+  }
+  spot_levels <- c("reject", "singlet", "doublet_certain", "doublet_uncertain")
+  bad <- which(cpp$status != 0)
+  if(length(bad) > 0) {
+    warning("process_beads_batch: compiled doublet search failed for ", length(bad), " bead(s); re-running them in R")
+    fb <- if(max_cores > 1 && .Platform$OS.type == "unix" && length(bad) > 1)
+      fork_lapply(length(bad), max_cores, function(k) fallback(bad[k])) else lapply(bad, fallback)
+  }
+  fb_pos <- integer(n); fb_pos[bad] <- seq_along(bad)
+  lapply(seq_len(n), function(i) {
+    if(fb_pos[i] > 0) return(fb[[fb_pos[i]]])
+    all_w <- cpp$all_weights[i, ]; names(all_w) <- type_names
+    first <- type_names[cpp$first[i]]; second <- type_names[cpp$second[i]]
+    dw <- cpp$doublet_weights[i, ]; names(dw) <- c(first, second)
+    cn <- type_names[cpp$cand[[i]]]
+    sm <- cpp$score_mat[[i]]; dimnames(sm) <- list(cn, cn)
+    ss <- as.vector(cpp$singlet_scores[[i]]); names(ss) <- cn
+    list(all_weights = all_w, spot_class = factor(spot_levels[cpp$spot[i]], spot_levels), first_type = first,
+         second_type = second, doublet_weights = dw, min_score = cpp$min_score[i], singlet_score = cpp$singlet_score[i],
+         conv_all = cpp$conv_all[i], conv_doublet = cpp$conv_doublet[i], score_mat = as(sm, "CsparseMatrix"), singlet_scores = ss,
+         first_class = cpp$first_class[i], second_class = cpp$second_class[i])
+  })
+}

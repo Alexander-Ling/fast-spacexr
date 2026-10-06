@@ -24,6 +24,28 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// doublet_batch_cpp
+Rcpp::List doublet_batch_cpp(const arma::mat& S_base, const arma::vec& nUMI, const arma::mat& beads, const arma::mat& Q_mat, const arma::mat& SQ_mat, const arma::vec& X_vals, const double K_val, const double min_change, const Rcpp::IntegerVector& cls, const double conf_thresh, const double doublet_thresh, const int n_threads);
+RcppExport SEXP _spacexr_doublet_batch_cpp(SEXP S_baseSEXP, SEXP nUMISEXP, SEXP beadsSEXP, SEXP Q_matSEXP, SEXP SQ_matSEXP, SEXP X_valsSEXP, SEXP K_valSEXP, SEXP min_changeSEXP, SEXP clsSEXP, SEXP conf_threshSEXP, SEXP doublet_threshSEXP, SEXP n_threadsSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< const arma::mat& >::type S_base(S_baseSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type nUMI(nUMISEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type beads(beadsSEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type Q_mat(Q_matSEXP);
+    Rcpp::traits::input_parameter< const arma::mat& >::type SQ_mat(SQ_matSEXP);
+    Rcpp::traits::input_parameter< const arma::vec& >::type X_vals(X_valsSEXP);
+    Rcpp::traits::input_parameter< const double >::type K_val(K_valSEXP);
+    Rcpp::traits::input_parameter< const double >::type min_change(min_changeSEXP);
+    Rcpp::traits::input_parameter< const Rcpp::IntegerVector& >::type cls(clsSEXP);
+    Rcpp::traits::input_parameter< const double >::type conf_thresh(conf_threshSEXP);
+    Rcpp::traits::input_parameter< const double >::type doublet_thresh(doublet_threshSEXP);
+    Rcpp::traits::input_parameter< const int >::type n_threads(n_threadsSEXP);
+    rcpp_result_gen = Rcpp::wrap(doublet_batch_cpp(S_base, nUMI, beads, Q_mat, SQ_mat, X_vals, K_val, min_change, cls, conf_thresh, doublet_thresh, n_threads));
+    return rcpp_result_gen;
+END_RCPP
+}
 // irwls_batch_cpp
 Rcpp::List irwls_batch_cpp(const arma::mat& S_base, const arma::vec& nUMI, const arma::mat& beads, const arma::mat& Q_mat, const arma::mat& SQ_mat, const arma::vec& X_vals, const double K_val, const double min_change, const int n_iter, const int n_threads);
 RcppExport SEXP _spacexr_irwls_batch_cpp(SEXP S_baseSEXP, SEXP nUMISEXP, SEXP beadsSEXP, SEXP Q_matSEXP, SEXP SQ_matSEXP, SEXP X_valsSEXP, SEXP K_valSEXP, SEXP min_changeSEXP, SEXP n_iterSEXP, SEXP n_threadsSEXP) {
@@ -47,6 +69,7 @@ END_RCPP
 
 static const R_CallMethodDef CallEntries[] = {
     {"_spacexr_bound_qp_cpp", (DL_FUNC) &_spacexr_bound_qp_cpp, 3},
+    {"_spacexr_doublet_batch_cpp", (DL_FUNC) &_spacexr_doublet_batch_cpp, 12},
     {"_spacexr_irwls_batch_cpp", (DL_FUNC) &_spacexr_irwls_batch_cpp, 10},
     {NULL, NULL, 0}
 };

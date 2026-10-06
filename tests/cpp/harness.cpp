@@ -96,6 +96,47 @@ int main(int argc, char** argv) {
   }
   std::printf("%-44s %d/%d converged\n", "bound_qp random PD problems", qp_ok, qp_total);
   { arma::vec s; const bool ok = spx::bound_qp(arma::zeros(3, 3), arma::vec{1, 2, 3}, arma::vec{0, 0, -1}, s); std::printf("%-44s ok=%d (no crash)\n", "bound_qp singular D", (int)ok); }
+  // 6b. doublet mode: determinism across threads, hostile inputs, invalid arguments, grouped classes
+  {
+    const arma::uword K = c.S.n_cols; std::vector<int> own(K), grouped(K);
+    for (arma::uword k = 0; k < K; ++k) { own[k] = static_cast<int>(k); grouped[k] = static_cast<int>(k / 3); }
+    auto drun = [&](const arma::mat& S, const arma::vec& u, const arma::mat& Bm, const std::vector<int>& cl, int thr) {
+      return spx::doublet_batch(S, u, Bm, c.Q, c.SQ, c.X, c.K, 1e-3, cl, 5.0, 20.0, thr); };
+    auto dreport = [&](const char* label, const spx::DoubletBatchResult& r) {
+      int cnt[10] = {0}; for (int s : r.status) ++cnt[std::min(std::max(s, 0), 9)];
+      std::printf("%-44s n=%zu status:", label, r.status.size()); for (int k = 0; k < 10; ++k) if (cnt[k]) std::printf(" %d:%d", k, cnt[k]); std::printf("\n"); };
+    const arma::uword nd2 = 150; arma::mat Bd = B.rows(0, nd2 - 1); arma::vec Ud = U.subvec(0, nd2 - 1);
+    auto d1 = drun(c.S, Ud, Bd, own, 1); dreport("doublet: normal, 1 thread", d1);
+    CHECK(std::count(d1.status.begin(), d1.status.end(), 0) == (long)nd2, "doublet: all beads should solve");
+    int spot_cnt[5] = {0}; for (auto& b : d1.beads) ++spot_cnt[b.spot_class];
+    std::printf("  spot classes: reject %d, singlet %d, certain %d, uncertain %d\n", spot_cnt[1], spot_cnt[2], spot_cnt[3], spot_cnt[4]);
+    for (int t : {2, 8, 32}) {
+      auto dt = drun(c.S, Ud, Bd, own, t); bool same = dt.status == d1.status;
+      for (std::size_t i = 0; i < nd2 && same; ++i) {
+        const auto &a = d1.beads[i], &b = dt.beads[i];
+        same = a.first == b.first && a.second == b.second && a.spot_class == b.spot_class && a.cand == b.cand &&
+               arma::approx_equal(a.score_mat, b.score_mat, "absdiff", 0.0) && arma::approx_equal(a.doublet_weights, b.doublet_weights, "absdiff", 0.0) &&
+               arma::approx_equal(a.all_weights, b.all_weights, "absdiff", 0.0) && a.min_score == b.min_score && a.singlet_score == b.singlet_score;
+      }
+      std::printf("  doublet %2d threads bitwise identical to 1 thread: %s\n", t, same ? "yes" : "NO"); CHECK(same, "doublet: thread count changed the result");
+    }
+    dreport("doublet: grouped classes", drun(c.S, Ud, Bd, grouped, 4));
+    dreport("doublet: zero beads", drun(c.S, arma::vec(), arma::mat(0, c.S.n_rows), own, 4));
+    dreport("doublet: 3 beads, 32 threads", drun(c.S, Ud.subvec(0, 2), Bd.rows(0, 2), own, 32));
+    arma::mat Bdn = Bd; Bdn(2, 4) = arma::datum::nan; Bdn.row(3).fill(-1.0); Bdn.row(5).zeros(); Bdn.row(6).fill(1e6);
+    auto dn = drun(c.S, Ud, Bdn, own, 4); dreport("doublet: NaN / negative / zero / huge counts", dn);
+    CHECK(dn.status[2] == 4 && dn.status[3] == 4, "doublet: NaN / negative counts must give status 4");
+    arma::vec Udn = Ud; Udn[1] = arma::datum::nan; Udn[2] = 0; Udn[3] = 1e12; dreport("doublet: NaN / zero / huge nUMI", drun(c.S, Udn, Bd, own, 4));
+    dreport("doublet: two cell types only", drun(c.S.cols(0, 1), Ud, Bd, {0, 1}, 2));
+    arma::mat Sdup = c.S; Sdup.col(2) = Sdup.col(1); dreport("doublet: duplicated columns", drun(Sdup, Ud, Bd, own, 2));
+    expect_throw("doublet: one cell type", [&] { drun(c.S.col(0), Ud, Bd, {0}, 2); });
+    expect_throw("doublet: class vector wrong length", [&] { drun(c.S, Ud, Bd, {0, 1}, 2); });
+    expect_throw("doublet: beads/gene mismatch", [&] { drun(c.S, Ud, Bd.cols(0, 9), own, 2); });
+    expect_throw("doublet: NaN in reference", [&] { arma::mat Sn = c.S; Sn(0, 0) = arma::datum::nan; drun(Sn, Ud, Bd, own, 2); });
+    const long rd0 = rss_kb();
+    for (int rep = 0; rep < 300; ++rep) { auto r = drun(c.S, Ud.subvec(0, 19), Bd.rows(0, 19), own, 4); if (r.status.empty()) return 3; }
+    std::printf("  doublet rss before %ld kB, after 300 calls %ld kB (growth %ld kB)\n", rd0, rss_kb(), rss_kb() - rd0);
+  }
   // 7. repeated-call memory growth (leaks show up as RSS growth). LeakSanitizer reports at exit when enabled.
   const long r0 = rss_kb();
   for (int rep = 0; rep < 1500; ++rep) { auto r = run(c, c.S, U.subvec(0, 49), B.rows(0, 49), 4); if (r.status.empty()) return 3; if (rep == 100) std::printf("  rss after 100 calls: %ld kB\n", rss_kb()); }
