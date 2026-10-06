@@ -154,10 +154,10 @@ fitPixels <- function(RCTD, doublet_mode = "doublet") {
     beads = t(as.matrix(RCTD@spatialRNA@counts[RCTD@internal_vars$gene_list_reg,]))
     results = decompose_batch(RCTD@spatialRNA@nUMI, cell_type_info[[1]], beads, RCTD@internal_vars$gene_list_reg, constrain = F,
                               max_cores = RCTD@config$max_cores, MIN.CHANGE = RCTD@config$MIN_CHANGE_REG)
-    weights = Matrix(0, nrow = length(results), ncol = RCTD@cell_type_info$renorm[[3]])
+    # assemble in one call: assigning rows one at a time into a Matrix object copies the matrix each time
+    weights = do.call(rbind, lapply(results, function(r) r$weights))
     rownames(weights) = colnames(RCTD@spatialRNA@counts); colnames(weights) = RCTD@cell_type_info$renorm[[2]];
-    for(i in 1:dim(weights)[1])
-      weights[i,] = results[[i]]$weights
+    weights = Matrix(weights)
     RCTD@results <- list(weights = weights)
     return(RCTD)
   } else if(doublet_mode == "multi") {
@@ -175,28 +175,47 @@ decompose_batch <- function(nUMI, cell_type_means, beads, gene_list, constrain =
   #out_file = "logs/decompose_batch_log.txt"
   #if (file.exists(out_file))
   #  file.remove(out_file)
-  if(max_cores > 1) {
-    numCores = parallel::detectCores()
-    if(parallel::detectCores() > max_cores)
-      numCores <- max_cores
-    cl <- parallel::makeCluster(numCores,setup_strategy = "sequential",outfile="")
+  # Everything that does not depend on the bead is computed once: the profile matrix restricted to
+  # gene_list, and the pairwise-product matrix S_mat. For bead i, S = S_base * nUMI[i] and
+  # S_mat = S_mat_base * nUMI[i]^2.
+  S_base <- data.matrix(cell_type_means[gene_list,])
+  S_mat_base <- if(OLS) NULL else build_S_mat(S_base)
+  n_beads <- dim(beads)[1]
+  decompose_one <- function(i) {
+    decompose_full(S_base * nUMI[i], nUMI[i], beads[i,], constrain = constrain, OLS = OLS, MIN_CHANGE = MIN.CHANGE,
+                   S_mat = if(is.null(S_mat_base)) NULL else S_mat_base * nUMI[i]^2)
+  }
+  decompose_chunk <- function(ix) lapply(ix, decompose_one)
+  if(max_cores > 1 && n_beads > 1 && .Platform$OS.type == "unix") {
+    # Forked workers inherit Q_mat, X_vals, K_val, SQ_mat and the profile matrices copy-on-write, so
+    # nothing is serialized and no cluster has to be started. Beads are handed out in many small
+    # chunks (dynamic scheduling) rather than one task per bead.
+    numCores <- min(max_cores, parallel::detectCores(), n_beads)
+    chunk_size <- max(1L, min(500L, ceiling(n_beads / (numCores * 8))))
+    chunks <- split(seq_len(n_beads), ceiling(seq_len(n_beads) / chunk_size))
+    out <- parallel::mclapply(chunks, decompose_chunk, mc.cores = numCores, mc.preschedule = FALSE)
+    failed <- vapply(out, function(x) inherits(x, "try-error") || is.null(x), logical(1))
+    if(any(failed))
+      stop("decompose_batch: ", sum(failed), " worker chunk(s) failed: ",
+           paste(unique(unlist(lapply(out[failed], as.character))), collapse = "; "))
+    weights <- unlist(out, recursive = FALSE, use.names = FALSE)
+  } else if(max_cores > 1) {
+    # no fork on this platform: one task per worker, not per bead
+    numCores <- min(max_cores, parallel::detectCores(), n_beads)
+    cl <- parallel::makeCluster(numCores, setup_strategy = "sequential", outfile = "")
     doParallel::registerDoParallel(cl)
-    environ = c('decompose_full','solveIRWLS.weights',
-                'solveOLS','solveWLS', 'Q_mat', 'K_val','X_vals', 'SQ_mat')
-    #for(i in 1:100) {
-    weights <- foreach::foreach(i = 1:(dim(beads)[1]), .packages = c("quadprog"), .export = environ) %dopar% {
-      #if(i %% 100 == 0)
-      #  cat(paste0("Finished sample: ",i,"\n"), file=out_file, append=TRUE)
+    environ = c('decompose_full','solveIRWLS.weights','solveOLS','solveWLS', 'Q_mat', 'K_val','X_vals', 'SQ_mat',
+                'build_S_mat', 'get_hess_index', 'get_der_fast', 'calc_Q_all', 'get_d1_d2', '.hess_index_cache')
+    chunks <- split(seq_len(n_beads), cut(seq_len(n_beads), numCores, labels = FALSE))
+    out <- foreach::foreach(ix = chunks, .packages = c("quadprog"), .export = environ) %dopar% {
       assign("Q_mat",Q_mat, envir = globalenv()); assign("X_vals",X_vals, envir = globalenv())
       assign("K_val",K_val, envir = globalenv()); assign("SQ_mat",SQ_mat, envir = globalenv());
-      decompose_full(data.matrix(cell_type_means[gene_list,]*nUMI[i]), nUMI[i], beads[i,], constrain = constrain, OLS = OLS, MIN_CHANGE = MIN.CHANGE)
+      decompose_chunk(ix)
     }
     parallel::stopCluster(cl)
+    weights <- unlist(out, recursive = FALSE, use.names = FALSE)
   } else {
-    weights <- list()
-    for(i in 1:(dim(beads)[1])) {
-      weights[[i]] <- decompose_full(data.matrix(cell_type_means[gene_list,]*nUMI[i]), nUMI[i], beads[i,], constrain = constrain, OLS = OLS, MIN_CHANGE = MIN.CHANGE)
-    }
+    weights <- decompose_chunk(seq_len(n_beads))
   }
   return(weights)
 }

@@ -173,7 +173,30 @@ get_d1_d2 <- function(Y, lambda) {
   return(list(d1_vec = d_all$d1_vec, d2_vec = d_all$d2_vec))
 }
 
-get_der_fast <- function(S, B, gene_list, prediction, bulk_mode = F) {
+# Index pairs (i, j >= i), enumerated row by row, for the upper triangle of a K x K matrix.
+# Cached per K. `ij` / `ji` are the linear (column-major) positions of (i,j) and (j,i).
+.hess_index_cache <- new.env()
+get_hess_index <- function(K) {
+  key <- as.character(K)
+  idx <- .hess_index_cache[[key]]
+  if(is.null(idx)) {
+    ii <- rep(seq_len(K), times = K:1)
+    jj <- unlist(lapply(seq_len(K), function(i) i:K), use.names = FALSE)
+    idx <- list(ii = ii, jj = jj, ij = ii + (jj - 1L) * K, ji = jj + (ii - 1L) * K)
+    .hess_index_cache[[key]] <- idx
+  }
+  idx
+}
+
+# All pairwise products S[,i] * S[,j] (j >= i) of the columns of S, in the order of get_hess_index().
+build_S_mat <- function(S) {
+  idx <- get_hess_index(dim(S)[2])
+  S[, idx$ii, drop = FALSE] * S[, idx$jj, drop = FALSE]
+}
+
+get_der_fast <- function(S, B, gene_list, prediction, bulk_mode = F, S_mat = NULL) {
+  if(is.null(S_mat))
+    S_mat <- build_S_mat(S)
   if(bulk_mode) {
     #d1_vec <- -t(log(prediction) - log(B))
     #d2_vec <- -t(1/prediction)
@@ -185,16 +208,13 @@ get_der_fast <- function(S, B, gene_list, prediction, bulk_mode = F) {
     d2_vec <- d1_d2$d2_vec
   }
   grad = -d1_vec %*% S;
-  hess_c <- -d2_vec %*% S_mat
-  hess <- matrix(0,nrow = dim(S)[2], ncol = dim(S)[2])
-  counter = 1
-  for(i in 1:dim(S)[2]) {
-    l <- dim(S)[2] - i
-    hess[i,i:dim(S)[2]] <- hess_c[counter:(counter+l)]
-    hess[i,i] <- hess[i,i] / 2
-    counter <- counter + l + 1
-  }
-  hess <- hess + t(hess)
+  hess_c <- as.vector(-d2_vec %*% S_mat)
+  # scatter the upper-triangle entries into a symmetric matrix (the diagonal appears once)
+  K <- dim(S)[2]
+  idx <- get_hess_index(K)
+  hess <- matrix(0, nrow = K, ncol = K)
+  hess[idx$ij] <- hess_c
+  hess[idx$ji] <- hess_c
   return(list(grad=grad, hess=hess))
 }
 

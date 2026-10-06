@@ -22,7 +22,7 @@ solveOLS<-function(S,B, solution, constrain = T){
 #solve using WLS with weights dampened by a certain dampening constant
 #if constrain, constrain the weights to sum up to 1
 solveIRWLS.weights <-function(S,B,nUMI, OLS=FALSE, constrain = TRUE, verbose = FALSE,
-                              n.iter = 50, MIN_CHANGE = .001, bulk_mode = F, solution = NULL){
+                              n.iter = 50, MIN_CHANGE = .001, bulk_mode = F, solution = NULL, S_mat = NULL){
   if(!bulk_mode)
     B[B > K_val] <- K_val
   solution <- numeric(dim(S)[2])
@@ -34,20 +34,18 @@ solveIRWLS.weights <-function(S,B,nUMI, OLS=FALSE, constrain = TRUE, verbose = F
   #solution <- runif(length(solution))*2 / length(solution) # random initialization
   names(solution) <- colnames(S)
 
-  S_mat <<- matrix(0,nrow = dim(S)[1],ncol = dim(S)[2]*(dim(S)[2] + 1)/2)
-  counter = 1
-  for(i in 1:dim(S)[2])
-    for(j in i:dim(S)[2]) {
-      S_mat[,counter] <<- S[,i] * S[,j] # depends on n^2
-      counter <- counter + 1
-    }
+  # S_mat (all pairwise products of the columns of S) depends only on S. Callers that solve many
+  # beads against the same S can pass it in; otherwise build it here (no global assignment).
+  if(is.null(S_mat))
+    S_mat <- build_S_mat(S)
 
   iterations<-0 #now use dampened WLS, iterate weights until convergence
   changes<-c()
   change<-1;
   while(change > MIN_CHANGE && iterations<n.iter){
-    new_solution<-solveWLS(S,B,solution, nUMI,constrain=constrain, bulk_mode = bulk_mode)
-    change<-norm(as.matrix(new_solution-solution))
+    new_solution<-solveWLS(S,B,solution, nUMI,constrain=constrain, bulk_mode = bulk_mode, S_mat = S_mat)
+    # base::norm's default type "O" on a one-column matrix is the sum of absolute values
+    change<-sum(abs(new_solution-solution))
     if(verbose) {
       print(paste("Change:",change))
       print(solution)
@@ -77,16 +75,21 @@ solveIRWLS.weights <-function(S,B,nUMI, OLS=FALSE, constrain = TRUE, verbose = F
 #B[inv]
 #plot(X_vals, Q_mat[2,])
 
-solveWLS<-function(S,B,initialSol, nUMI, bulk_mode = F, constrain = F){
+solveWLS<-function(S,B,initialSol, nUMI, bulk_mode = F, constrain = F, S_mat = NULL){
   solution<-pmax(initialSol,0)
   prediction = abs(S%*%solution)
   threshold = max(1e-4, nUMI * 1e-7)
   prediction[prediction < threshold] <- threshold
   gene_list = rownames(S)
-  derivatives <- get_der_fast(S, B, gene_list, prediction, bulk_mode = bulk_mode)
+  derivatives <- get_der_fast(S, B, gene_list, prediction, bulk_mode = bulk_mode, S_mat = S_mat)
   d_vec <- -derivatives$grad
-  D_mat <- psd(derivatives$hess)
-  norm_factor <- norm(D_mat,"2")
+  # positive-semidefinite part of the (symmetric) Hessian. symmetric = TRUE skips eigen()'s
+  # all.equal() symmetry check, and for a PSD matrix the spectral norm is its largest
+  # eigenvalue, so no separate SVD is needed.
+  eig <- eigen(derivatives$hess, symmetric = TRUE)
+  eig_vals <- pmax(eig$values, 1e-3)
+  D_mat <- eig$vectors %*% (eig_vals * t(eig$vectors))
+  norm_factor <- max(eig_vals)
   D_mat <- D_mat / norm_factor
   d_vec <- d_vec / norm_factor
   epsilon <- 1e-7; D_mat <- D_mat + epsilon * diag(length(d_vec))
