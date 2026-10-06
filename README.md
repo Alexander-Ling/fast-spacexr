@@ -13,7 +13,7 @@ README follows this section unchanged.
 > **Status: experimental.** Validated on Xenium data (345 genes, 19 cell types) and described honestly below,
 > including what has not been tested. Results are *not* bit-identical to upstream (see "Agreement with
 > upstream"). The code was written with the assistance of an AI coding assistant (Claude Code) and checked
-> with the tests listed here; it has not had an independent human code review.
+> with the tests listed here.
 
 ## Installation
 
